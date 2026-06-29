@@ -46,7 +46,8 @@ const TIMES_KEY = "desk-times-v1";
 const CLIENTS_KEY = "desk-clients-v1";
 const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
 
-function today() { const d = new Date(); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
+function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
+function today() { return fmtDMY(Date.now()); }
 function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "", notify: "", direccion: "", telefono: "", contacto: "" }; }
 
 // Stamp every loaded cell at this cycle's Monday so it loads as "actualizado".
@@ -549,6 +550,10 @@ export default function PriceDesk() {
           <div style={s.subtitle}>{CATALOG.length} SKUs · {SUPPLIERS.length} suppliers · supplier comparison · adjustable margin</div>
         </div>
         <div style={s.controls}>
+          <div style={s.mondayBadge}>
+            <span style={s.ctrlText}>ÚLTIMO LUNES</span>
+            <span style={s.mondayDate}>{fmtDMY(mondayStart())}</span>
+          </div>
           <label style={s.ctrlLabel}>
             <span style={s.ctrlText}>{import.meta.env.DEV ? "GEMINI KEY" : "CONTRASEÑA"}</span>
             <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
@@ -929,6 +934,8 @@ const styles = {
   controls: { display: "flex", gap: 14, alignItems: "flex-end" },
   ctrlLabel: { display: "flex", flexDirection: "column", gap: 4 },
   ctrlText: { fontSize: 10, color: "#6b7385", letterSpacing: 1 },
+  mondayBadge: { display: "flex", flexDirection: "column", gap: 4, background: "#11151f", border: "1px solid #244068", borderRadius: 4, padding: "4px 10px" },
+  mondayDate: { fontSize: 15, fontWeight: 700, color: "#6fa8e6", fontVariantNumeric: "tabular-nums" },
   input: { background: "#11151f", border: "1px solid #232a3a", color: "#e8ecf3", padding: "6px 8px", borderRadius: 4, fontFamily: "inherit", fontSize: 13, outline: "none" },
   toolbar: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" },
   toolBtn: { background: "#1f2937", border: "1px solid #2a3346", color: "#cfd6e4", padding: "5px 12px", borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 12 },
