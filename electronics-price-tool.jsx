@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CATALOG,
   SUPPLIERS,
@@ -220,6 +220,44 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(SHIPS_KEY, JSON.stringify(shippings)); } catch {} }, [shippings]);
   useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
 
+  // ---- sync con la base (Supabase, opcional) ----
+  const dbReady = useRef(false);
+  const dbOn = useRef(false);
+  const storeLoaded = useRef(false);
+  const saveTimers = useRef({});
+
+  async function loadStore() {
+    try {
+      const r = await fetch("/api/store", { headers: { "x-app-password": apiKey || "" } });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && d.configured) {
+        dbOn.current = true;
+        if (Array.isArray(d.clients) && d.clients.length) setClients(d.clients);
+        if (Array.isArray(d.shippings) && d.shippings.length) setShippings(d.shippings);
+        if (Array.isArray(d.invoices) && d.invoices.length) setInvoiceHistory(d.invoices);
+      }
+    } catch { /* sin DB / dev -> seguimos con localStorage */ }
+    finally { dbReady.current = true; }
+  }
+
+  function syncUp(key, value) {
+    if (!dbReady.current || !dbOn.current) return;
+    clearTimeout(saveTimers.current[key]);
+    saveTimers.current[key] = setTimeout(() => {
+      fetch("/api/store", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-app-password": apiKey || "" },
+        body: JSON.stringify({ key, value }),
+      }).catch(() => {});
+    }, 800);
+  }
+
+  useEffect(() => { if (apiKey && !storeLoaded.current) { storeLoaded.current = true; loadStore(); } }, [apiKey]);
+  useEffect(() => { syncUp("clients", clients); }, [clients]);
+  useEffect(() => { syncUp("shippings", shippings); }, [shippings]);
+  useEffect(() => { syncUp("invoices", invoiceHistory); }, [invoiceHistory]);
+
   const marginNum = parseFloat(margin) || 0;
   const prevSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
 
@@ -301,6 +339,7 @@ export default function PriceDesk() {
       setPrices(sp || {});
       setLista(sl || {});
       setTimes(timesForPrices(sp || {}));
+      loadStore(); // traer clientes / envíos / historial de la base, si está configurada
     } catch (e) {
       alert("Error cargando datos: " + e.message);
     }
