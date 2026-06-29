@@ -39,7 +39,7 @@ export default async function handler(req, res) {
 
   const gBody = {
     contents: [{ role: "user", parts }],
-    generationConfig: { temperature: 0, maxOutputTokens: maxTokens },
+    generationConfig: { temperature: 0, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
   };
   if (system) gBody.system_instruction = { parts: [{ text: system }] };
   if (json) gBody.generationConfig.responseMimeType = "application/json";

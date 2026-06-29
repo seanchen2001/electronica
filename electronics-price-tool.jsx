@@ -126,7 +126,7 @@ async function callGemini({ system, content, apiKey, maxTokens = 2048, json = fa
     const parts = [];
     for (const im of images) parts.push({ inline_data: { mime_type: im.mimeType, data: im.data } });
     if (content) parts.push({ text: content });
-    const body = { contents: [{ role: "user", parts }], generationConfig: { temperature: 0, maxOutputTokens: maxTokens } };
+    const body = { contents: [{ role: "user", parts }], generationConfig: { temperature: 0, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } } };
     if (system) body.system_instruction = { parts: [{ text: system }] };
     if (json) body.generationConfig.responseMimeType = "application/json";
     const res = await fetch(
