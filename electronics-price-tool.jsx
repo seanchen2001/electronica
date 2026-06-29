@@ -355,20 +355,6 @@ export default function PriceDesk() {
     return { aggBySku: agg, freshBySku: fresh };
   }, [prices, times, marginNum, now]);
 
-  // scoreboard: wins (lowest price) per supplier
-  const scoreboard = useMemo(() => {
-    const score = Object.fromEntries(SUPPLIERS.map((s) => [s, 0]));
-    for (const { name } of CATALOG) {
-      const agg = aggBySku[name];
-      if (agg.min == null) continue;
-      for (const sp of SUPPLIERS) {
-        const fresh = freshBySku[name]?.[sp] && freshBySku[name][sp] !== "expired";
-        if (fresh && prices[name]?.[sp] === agg.min) score[sp] += 1;
-      }
-    }
-    return score;
-  }, [aggBySku, freshBySku, prices]);
-  const maxWins = Math.max(0, ...Object.values(scoreboard));
 
   // ---- cotizador (client quote) ----
   function toggleSelected(sku) {
@@ -928,24 +914,6 @@ export default function PriceDesk() {
       )}
 
       {view === "mesa" && (<>
-      {/* scoreboard */}
-      <section style={s.section}>
-        <div style={s.sectionTitle}>CHEAPEST-SUPPLIER SCORE — SKUs WON</div>
-        <div style={s.scoreboard}>
-          {SUPPLIERS.map((sp) => {
-            const wins = scoreboard[sp] || 0;
-            const leader = wins > 0 && wins === maxWins;
-            return (
-              <div key={sp} style={{ ...s.scoreCard, ...(leader ? s.scoreLeader : {}) }}>
-                <div style={s.scoreName}>{sp}</div>
-                <div style={s.scoreWins}>{wins}</div>
-                <div style={s.scoreTrack}><div style={{ ...s.scoreFill, width: maxWins ? `${(wins / maxWins) * 100}%` : "0%", background: leader ? "#16a34a" : "#3b82f6" }} /></div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
       {/* ask the desk */}
       <section style={s.section}>
         <div style={s.sectionTitle}>ASK THE DESK</div>
