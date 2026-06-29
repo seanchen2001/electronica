@@ -44,11 +44,13 @@ const MARGIN_KEY = "desk-margin-v1";
 const SNAP_KEY = "desk-snapshots-v1";
 const TIMES_KEY = "desk-times-v1";
 const CLIENTS_KEY = "desk-clients-v1";
+const SHIPS_KEY = "desk-ships-v1";
 const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
 
 function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
 function today() { return fmtDMY(Date.now()); }
-function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "", notify: "", direccion: "", telefono: "", contacto: "" }; }
+function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "" }; }
+function blankShip() { return { id: "", label: "", notify: "", direccion: "", telefono: "", contacto: "" }; }
 
 // Stamp every loaded cell at this cycle's Monday so it loads as "actualizado".
 function timesForPrices(pricesObj) {
@@ -178,9 +180,14 @@ export default function PriceDesk() {
   const [quoteOverrides, setQuoteOverrides] = useState({}); // { sku: number }
   const [copied, setCopied] = useState(false);
 
+  // vista (Mesa de precios / Órdenes)
+  const [view, setView] = useState("mesa"); // "mesa" | "ordenes"
+
   // factura / remito
   const [clients, setClients] = useState(() => load(CLIENTS_KEY, []));
   const [clientForm, setClientForm] = useState(blankClient());
+  const [shippings, setShippings] = useState(() => load(SHIPS_KEY, []));
+  const [shipForm, setShipForm] = useState(blankShip());
   const [docType, setDocType] = useState("factura"); // "factura" | "remito"
   const [orderQuery, setOrderQuery] = useState("");
   const [order, setOrder] = useState({
@@ -202,6 +209,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(MARGIN_KEY, JSON.stringify(margin)); } catch {} }, [margin]);
   useEffect(() => { try { localStorage.setItem(SNAP_KEY, JSON.stringify(snapshots)); } catch {} }, [snapshots]);
   useEffect(() => { try { localStorage.setItem(CLIENTS_KEY, JSON.stringify(clients)); } catch {} }, [clients]);
+  useEffect(() => { try { localStorage.setItem(SHIPS_KEY, JSON.stringify(shippings)); } catch {} }, [shippings]);
 
   const marginNum = parseFloat(margin) || 0;
   const prevSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
@@ -430,6 +438,31 @@ export default function PriceDesk() {
     setClients((prev) => prev.filter((c) => c.id !== clientForm.id));
     setClientForm(blankClient());
   }
+  // shipping book (separate from client)
+  function setShipField(k, v) { setShipForm((p) => ({ ...p, [k]: v })); }
+  function loadShip(id) { const sh = shippings.find((x) => x.id === id); setShipForm(sh ? { ...sh } : blankShip()); }
+  function saveShip() {
+    if (!shipForm.label.trim() && !shipForm.notify.trim()) return;
+    setShippings((prev) => {
+      if (shipForm.id) return prev.map((x) => (x.id === shipForm.id ? shipForm : x));
+      const ns = { ...shipForm, id: "sh" + Date.now() };
+      setShipForm(ns);
+      return [...prev, ns];
+    });
+  }
+  function deleteShip() {
+    if (!shipForm.id) return;
+    setShippings((prev) => prev.filter((x) => x.id !== shipForm.id));
+    setShipForm(blankShip());
+  }
+  function importMarked() {
+    const skus = CATALOG.filter((c) => selected[c.name]).map((c) => c.name);
+    setOrder((p) => {
+      const have = new Set(p.items.map((i) => i.sku));
+      const add = skus.filter((sk) => !have.has(sk)).map((sk) => ({ sku: sk, qty: 1, price: lista[sk] ?? aggBySku[sk]?.client ?? 0 }));
+      return { ...p, items: [...p.items, ...add] };
+    });
+  }
   function setOrderField(k, v) { setOrder((p) => ({ ...p, [k]: v })); }
   function addOrderItem(sku) {
     if (!CATALOG_NAMES.includes(sku)) return;
@@ -447,8 +480,9 @@ export default function PriceDesk() {
   }
   function removeItem(idx) { setOrder((p) => ({ ...p, items: p.items.filter((_, i) => i !== idx) })); }
   const clientForPdf = {
-    ...clientForm,
+    name: clientForm.name, ruc: clientForm.ruc, phone: clientForm.phone,
     addressLines: (clientForm.address || "").split("\n").map((x) => x.trim()).filter(Boolean),
+    notify: shipForm.notify, direccion: shipForm.direccion, telefono: shipForm.telefono, contacto: shipForm.contacto,
   };
   const orderPiezas = order.items.reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const orderSubtotal = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.price) || 0), 0);
@@ -567,6 +601,12 @@ export default function PriceDesk() {
         </div>
       </header>
 
+      <div style={s.viewNav}>
+        <button onClick={() => setView("mesa")} style={{ ...s.viewTab, ...(view === "mesa" ? s.viewTabOn : {}) }}>📊 Mesa de precios</button>
+        <button onClick={() => setView("ordenes")} style={{ ...s.viewTab, ...(view === "ordenes" ? s.viewTabOn : {}) }}>🧾 Órdenes · factura / remito</button>
+      </div>
+
+      {view === "mesa" && (<>
       {/* toolbar */}
       <div style={s.toolbar}>
         <button onClick={saveSnapshot} style={s.toolBtn}>Save snapshot</button>
@@ -777,9 +817,11 @@ export default function PriceDesk() {
         )}
       </section>
 
-      {/* factura / remito */}
+      </>)}
+
+      {view === "ordenes" && (
       <section style={s.section}>
-        <div style={s.sectionTitle}>FACTURA / REMITO</div>
+        <div style={s.sectionTitle}>ÓRDENES — Factura / Remito</div>
         <div style={s.planTabs}>
           <button onClick={() => setDocType("factura")} style={{ ...s.planTab, ...(docType === "factura" ? s.planTabOn : {}) }}>Factura (con precios)</button>
           <button onClick={() => setDocType("remito")} style={{ ...s.planTab, ...(docType === "remito" ? s.planTabOn : {}) }}>Remito (sin precios)</button>
@@ -787,23 +829,35 @@ export default function PriceDesk() {
 
         <div style={s.invGrid}>
           <div style={s.invCol}>
-            <div style={s.invColHead}>CLIENTE</div>
+            <div style={s.invColHead}>CLIENTE (opcional)</div>
             <select value={clientForm.id} onChange={(e) => loadClient(e.target.value)} style={s.invInput}>
-              <option value="">— nuevo cliente —</option>
+              <option value="">— nuevo / sin cliente —</option>
               {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
             <input placeholder="Nombre" value={clientForm.name} onChange={(e) => setClientField("name", e.target.value)} style={s.invInput} />
             <textarea placeholder="Dirección (varias líneas)" value={clientForm.address} onChange={(e) => setClientField("address", e.target.value)} rows={2} style={s.invArea} />
             <input placeholder="RUC" value={clientForm.ruc} onChange={(e) => setClientField("ruc", e.target.value)} style={s.invInput} />
             <input placeholder="Teléfono" value={clientForm.phone} onChange={(e) => setClientField("phone", e.target.value)} style={s.invInput} />
-            <div style={{ ...s.invColHead, marginTop: 6 }}>SHIPPING</div>
-            <input placeholder="Notify" value={clientForm.notify} onChange={(e) => setClientField("notify", e.target.value)} style={s.invInput} />
-            <input placeholder="Dirección de envío" value={clientForm.direccion} onChange={(e) => setClientField("direccion", e.target.value)} style={s.invInput} />
-            <input placeholder="Teléfono de envío" value={clientForm.telefono} onChange={(e) => setClientField("telefono", e.target.value)} style={s.invInput} />
-            <input placeholder="Contacto" value={clientForm.contacto} onChange={(e) => setClientField("contacto", e.target.value)} style={s.invInput} />
             <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
               <button onClick={saveClient} style={s.toolBtn}>{clientForm.id ? "Actualizar" : "Guardar"} cliente</button>
               {clientForm.id && <button onClick={deleteClient} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
+            </div>
+          </div>
+
+          <div style={s.invCol}>
+            <div style={s.invColHead}>ENVÍO / SHIPPING (opcional)</div>
+            <select value={shipForm.id} onChange={(e) => loadShip(e.target.value)} style={s.invInput}>
+              <option value="">— nuevo / sin envío —</option>
+              {shippings.map((sh) => <option key={sh.id} value={sh.id}>{sh.label || sh.notify}</option>)}
+            </select>
+            <input placeholder="Etiqueta (ej. CIF Miami)" value={shipForm.label} onChange={(e) => setShipField("label", e.target.value)} style={s.invInput} />
+            <input placeholder="Notify" value={shipForm.notify} onChange={(e) => setShipField("notify", e.target.value)} style={s.invInput} />
+            <input placeholder="Dirección de envío" value={shipForm.direccion} onChange={(e) => setShipField("direccion", e.target.value)} style={s.invInput} />
+            <input placeholder="Teléfono" value={shipForm.telefono} onChange={(e) => setShipField("telefono", e.target.value)} style={s.invInput} />
+            <input placeholder="Contacto" value={shipForm.contacto} onChange={(e) => setShipField("contacto", e.target.value)} style={s.invInput} />
+            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              <button onClick={saveShip} style={s.toolBtn}>{shipForm.id ? "Actualizar" : "Guardar"} envío</button>
+              {shipForm.id && <button onClick={deleteShip} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
             </div>
           </div>
 
@@ -833,6 +887,7 @@ export default function PriceDesk() {
             onKeyDown={(e) => { if (e.key === "Enter") { const m = CATALOG_NAMES.find((n) => n.toLowerCase() === orderQuery.trim().toLowerCase()); if (m) addOrderItem(m); } }}
             placeholder="Agregar modelo (Enter)…" style={s.cotSearch} />
           <datalist id="catalog-dl">{CATALOG.map((c) => <option key={c.name} value={c.name} />)}</datalist>
+          <button onClick={importMarked} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }} title="Traer los modelos tildados en la cotización de la Mesa">Traer marcados</button>
         </div>
 
         {order.items.length > 0 && (
@@ -862,14 +917,17 @@ export default function PriceDesk() {
 
         <div style={s.invFoot}>
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b></>}</span>
-          {order.items.length > 0 && clientForm.name.trim()
+          {order.items.length > 0
             ? <PDFDownloadLink document={<InvoiceDoc company={COMPANY} client={clientForPdf} order={order} mode={docType} />} fileName={`${docType}-${order.invoiceNo}.pdf`} style={s.pdfBtn}>
                 {({ loading }) => loading ? "Generando…" : `⬇ Descargar ${docType} PDF`}
               </PDFDownloadLink>
-            : <span style={s.askHint}>Cargá un cliente (con nombre) y al menos un item para descargar.</span>}
+            : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
         </div>
       </section>
 
+      )}
+
+      {view === "mesa" && (<>
       {/* scoreboard */}
       <section style={s.section}>
         <div style={s.sectionTitle}>CHEAPEST-SUPPLIER SCORE — SKUs WON</div>
@@ -922,6 +980,7 @@ export default function PriceDesk() {
           ? <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>
           : <div style={s.askHint}>Escribí/pegá una lista, pegá un screenshot (Ctrl+V) o usá 📷 Imagen; Gemini lee y tilda los modelos del catálogo (se suman a lo ya marcado).</div>)}
       </section>
+      </>)}
     </div>
   );
 }
@@ -1013,7 +1072,10 @@ const styles = {
   ovTag: { color: "#6b7385", fontSize: 10 },
   quotePreviewLabel: { fontSize: 10.5, color: "#6b7385", marginBottom: 4 },
   quotePreview: { background: "#0b0e14", border: "1px solid #232a3a", borderRadius: 6, padding: 12, fontFamily: "inherit", fontSize: 12.5, color: "#dfe4ee", lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0, overflowX: "auto" },
-  invGrid: { display: "grid", gridTemplateColumns: "minmax(240px,1fr) minmax(240px,1fr)", gap: 14, marginBottom: 6 },
+  viewNav: { display: "flex", gap: 8, marginBottom: 16 },
+  viewTab: { background: "#11151f", border: "1px solid #232a3a", color: "#9aa3b5", padding: "9px 18px", borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 },
+  viewTabOn: { background: "#1e293b", borderColor: "#3b82f6", color: "#e8ecf3" },
+  invGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 6 },
   invCol: { display: "flex", flexDirection: "column", gap: 5 },
   invColHead: { fontSize: 10, fontWeight: 700, letterSpacing: 1, color: "#6b7385" },
   invInput: { background: "#11151f", border: "1px solid #232a3a", color: "#e8ecf3", padding: "6px 8px", borderRadius: 4, fontFamily: "inherit", fontSize: 12, outline: "none" },
