@@ -200,6 +200,7 @@ export default function PriceDesk() {
   const [apiKey, setApiKey] = useState(() => { try { return sessionStorage.getItem("desk-secret") || ""; } catch { return ""; } });
   useEffect(() => { try { sessionStorage.setItem("desk-secret", apiKey); } catch {} }, [apiKey]);
   const [margin, setMargin] = useState(() => load(MARGIN_KEY, 3));
+  const [hideEmpty, setHideEmpty] = useState(false); // ocultar modelos sin precio esta semana
   // catálogo dinámico: base (fijo) + modelos agregados por el usuario
   const [extraCatalog, setExtraCatalog] = useState(() => load(CAT_KEY, []));
   const catalog = useMemo(() => [...CATALOG, ...extraCatalog], [extraCatalog]);
@@ -506,6 +507,12 @@ export default function PriceDesk() {
     return { aggBySku: agg, freshBySku: fresh };
   }, [prices, times, marginNum, now, catalog]);
 
+  // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
+  const visibleCatalog = useMemo(
+    () => (hideEmpty ? catalog.filter((c) => aggBySku[c.name]?.min != null) : catalog),
+    [catalog, aggBySku, hideEmpty]
+  );
+
 
   // ---- cotizador (client quote) ----
   function toggleSelected(sku) {
@@ -786,7 +793,7 @@ export default function PriceDesk() {
       <header style={s.header}>
         <div>
           <div style={s.title}>PRICE DESK</div>
-          <div style={s.subtitle}>{catalog.length} SKUs · {SUPPLIERS.length} suppliers · supplier comparison · adjustable margin</div>
+          {!isMobile && <div style={s.subtitle}>{catalog.length} SKUs · {SUPPLIERS.length} suppliers · supplier comparison · adjustable margin</div>}
         </div>
         <div style={s.controls}>
           <div style={s.mondayBadge}>
@@ -893,18 +900,23 @@ export default function PriceDesk() {
 
       {/* comparison table */}
       <section style={s.section}>
+        <label style={s.hideToggle}>
+          <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} style={s.chk} />
+          Ocultar modelos sin precio esta semana
+          {hideEmpty && <span style={s.hideCount}> ({catalog.length - visibleCatalog.length} ocultos)</span>}
+        </label>
         {isMobile ? (
           <table style={s.mTable}>
             <thead>
               <tr>
                 <th style={{ ...s.mTh, textAlign: "left" }}>Modelo</th>
-                <th style={s.mTh}>Mín sem.</th>
-                <th style={s.mTh}>Lista</th>
-                <th style={{ ...s.mTh, color: "#fbbf24" }}>+{marginNum}%</th>
+                <th style={{ ...s.mTh, width: 56 }}>Mín</th>
+                <th style={{ ...s.mTh, width: 52 }}>Lista</th>
+                <th style={{ ...s.mTh, width: 54, color: "#fbbf24" }}>+{marginNum}%</th>
               </tr>
             </thead>
             <tbody>
-              {(() => { let lc = null; return catalog.map(({ name, cat }) => {
+              {(() => { let lc = null; return visibleCatalog.map(({ name, cat }) => {
                 const agg = aggBySku[name];
                 const header = cat !== lc ? ((lc = cat), (
                   <tr key={"mc-" + cat}><td colSpan={4} style={s.mCat}>{cat}</td></tr>
@@ -913,12 +925,12 @@ export default function PriceDesk() {
                   <React.Fragment key={name}>
                     {header}
                     <tr>
-                      <td style={{ ...s.mTd, textAlign: "left", color: "#cfd6e4" }}>{name}</td>
-                      <td style={s.mTd}>{money(agg.min)}</td>
+                      <td style={s.mModel}>{name}</td>
+                      <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}</td>
                       <td style={{ ...s.mTd, padding: 2 }}>
                         <input value={lista[name] ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={s.mLista} inputMode="decimal" />
                       </td>
-                      <td style={{ ...s.mTd, color: "#fbbf24", fontWeight: 600 }}>{agg.client != null ? money(agg.client) : "—"}</td>
+                      <td style={{ ...s.mTd, color: "#fbbf24", fontWeight: 600 }}>{agg.client != null ? "$" + Math.round(agg.client).toLocaleString() : "—"}</td>
                     </tr>
                   </React.Fragment>
                 );
@@ -939,7 +951,7 @@ export default function PriceDesk() {
               </tr>
             </thead>
             <tbody>
-              {catalog.map(({ name, cat }) => {
+              {visibleCatalog.map(({ name, cat }) => {
                 const agg = aggBySku[name];
                 const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
                 const delta = spread ? agg.med - agg.min : 0;
@@ -1391,11 +1403,14 @@ const styles = {
   // móvil
   appMobile: { padding: "12px 12px 40px", fontSize: 13 },
   mLoadRow: { display: "flex", gap: 8, marginBottom: 14 },
-  mTable: { borderCollapse: "collapse", width: "100%", fontSize: 12 },
-  mTh: { background: "#11151f", color: "#8b94a7", fontSize: 10, fontWeight: 600, textAlign: "right", padding: "6px 6px", borderBottom: "1px solid #1c2230", position: "sticky", top: 0 },
-  mTd: { padding: "5px 6px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
+  mTable: { borderCollapse: "collapse", width: "100%", fontSize: 11.5, tableLayout: "fixed" },
+  mTh: { background: "#11151f", color: "#8b94a7", fontSize: 9.5, fontWeight: 600, textAlign: "right", padding: "6px 4px", borderBottom: "1px solid #1c2230", position: "sticky", top: 0 },
+  mTd: { padding: "5px 4px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
+  mModel: { padding: "5px 4px", textAlign: "left", borderBottom: "1px solid #151a26", color: "#cfd6e4", whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.25 },
   mCat: { background: "#0e1218", color: "#8b94a7", fontSize: 9.5, fontWeight: 700, letterSpacing: 1, padding: "4px 6px", textTransform: "uppercase" },
-  mLista: { width: 56, background: "#0b0e14", border: "1px solid #232a3a", color: "#c4b5fd", textAlign: "right", fontFamily: "inherit", fontSize: 12, padding: "3px 4px", borderRadius: 3, outline: "none" },
+  mLista: { width: "100%", boxSizing: "border-box", background: "#0b0e14", border: "1px solid #232a3a", color: "#c4b5fd", textAlign: "right", fontFamily: "inherit", fontSize: 11.5, padding: "3px 4px", borderRadius: 3, outline: "none" },
+  hideToggle: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#9aa3b5", marginBottom: 10, cursor: "pointer" },
+  hideCount: { color: "#525a6b" },
   invTable: { borderCollapse: "collapse", width: "100%", marginTop: 8, border: "1px solid #1c2230" },
   invTh: { background: "#11151f", color: "#8b94a7", fontSize: 10, fontWeight: 600, textAlign: "right", padding: "6px 8px", borderBottom: "1px solid #1c2230" },
   invTd: { padding: "3px 8px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums" },
