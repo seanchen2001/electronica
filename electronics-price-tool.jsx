@@ -22,18 +22,34 @@ import InvoiceDoc from "./InvoiceDoc.jsx";
  */
 
 const GEMINI_MODEL = "gemini-2.5-flash";
-const CATALOG_NAMES = CATALOG.map((c) => c.name);
-const CATALOG_LINES = CATALOG.map((c) => `${c.name}  [${c.cat}]`);
+// Categorías válidas para nuevos modelos.
+const CATEGORIES = ["Samsung", "Motorola LATIN", "Motorola EURO"];
 
 // Shared disambiguation rules: section headers (EURO/LATIN) + base-variant hint.
 const DISAMBIG =
   "If the text has section headers like EURO or LATIN, use them to disambiguate (EURO = the 'XT2xxx ...' models; LATIN = the 'Motorola ...' models). A bare base name like 'Edge 60' (no Neo/Fusion/Pro) means the base variant of that section.";
 
-const PARSE_SYSTEM =
-  "You are a price extraction assistant for a phone wholesaler. The user pastes ONE supplier's raw quote in any messy format (Spanish, colors, quantities, section headers). Extract the unit price per phone model and map each to the closest standard SKU from this EXACT list (category in brackets):\n" +
-  CATALOG_LINES.join("\n") +
-  "\n\nRules: ignore colors. If a model lists SEVERAL prices by quantity (a price ladder, e.g. a base price for '150+ PCS' plus cheaper prices for 20/50+ units), take the HIGHEST price (the worst / most conservative — the base price for the smallest quantity). " + DISAMBIG +
-  ' Use the exact SKU string as the JSON key. Respond ONLY with a JSON object like {"S26 ULTRA 12/512GB 5G": 1020}. Omit only what you truly cannot map. No markdown, no commentary.';
+// Prompts se construyen del catálogo (dinámico). El parser devuelve {matched, new}:
+// matched = SKU existente -> precio; new = modelos que no están en el catálogo.
+function buildParseSystem(lines) {
+  return (
+    "You are a price extraction assistant for a phone wholesaler. The user pastes ONE supplier's raw quote (Spanish, messy, with quantities/colors/section headers). Map each model to the closest standard SKU from this EXACT list (category in brackets):\n" +
+    lines.join("\n") +
+    "\n\nRules:\n- Ignore colors.\n" +
+    "- If a model lists several prices by quantity (a price ladder, e.g. a base price for '150+ PCS' plus cheaper ones for 20/50+ units), take the HIGHEST price (the worst / most conservative — the base price for the smallest quantity).\n- " + DISAMBIG +
+    "\n- For models that clearly do NOT match any SKU in the list, do NOT force them. Put them under \"new\" with a normalized name in the SAME naming style as the list, a category (one of: Samsung, Motorola LATIN, Motorola EURO), and the price (same highest-price rule).\n" +
+    'Respond ONLY with JSON: {"matched": {"<exact SKU from the list>": price, ...}, "new": [{"name": "...", "cat": "...", "price": N}, ...]}. No markdown, no commentary.'
+  );
+}
+
+function buildMarkSystem(lines) {
+  return (
+    "El usuario manda una lista o screenshot de modelos a cotizar (texto libre, español, con precios/colores/cantidades/encabezados). Devolvé SOLO un array JSON con los SKU EXACTOS de esta lista que correspondan (categoría entre corchetes):\n" +
+    lines.join("\n") +
+    "\n\nReglas: ignorá precios, colores y cantidades. " + DISAMBIG +
+    ' Omití solo lo que realmente no puedas mapear. Ejemplo: ["XT2505 Edge 60 8+256", "A17 4+128 DS"]. Sin markdown, sin texto extra.'
+  );
+}
 
 const DESK_SYSTEM =
   "You are a trading-desk analyst for a phone wholesaler. Answer using ONLY the supplied JSON data: rows of {sku, cat, prices (per supplier, USD), min, median, client}, the margin %, and optionally a 'previous' snapshot. Be concise and quantitative, cite supplier names, and when asked about changes compare against 'previous'. If the data doesn't cover the question, say so plainly.";
@@ -46,6 +62,7 @@ const TIMES_KEY = "desk-times-v1";
 const CLIENTS_KEY = "desk-clients-v1";
 const SHIPS_KEY = "desk-ships-v1";
 const HIST_KEY = "desk-invoices-v1";
+const CAT_KEY = "desk-extra-catalog-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -138,39 +155,44 @@ async function callGemini({ system, content, apiKey, maxTokens = 2048, json = fa
   return (data.candidates?.[0]?.content?.parts || []).map((p) => p.text).join("");
 }
 
-async function parseSupplierQuote(rawText, apiKey) {
-  const text = await callGemini({ system: PARSE_SYSTEM, content: rawText, apiKey, json: true });
-  const parsed = JSON.parse(stripFences(text));
-  const clean = {};
-  for (const sku of CATALOG_NAMES) {
-    const v = parsed[sku];
-    const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.]/g, "")) : v;
-    if (typeof n === "number" && !Number.isNaN(n)) clean[sku] = n;
-  }
-  return clean;
+const toNum = (v) => {
+  const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.]/g, "")) : v;
+  return typeof n === "number" && !Number.isNaN(n) ? n : null;
+};
+
+async function parseSupplierQuote(rawText, apiKey, system, names) {
+  const text = await callGemini({ system, content: rawText, apiKey, json: true, maxTokens: 8192 });
+  let parsed;
+  try { parsed = JSON.parse(stripFences(text)); }
+  catch { throw new Error("La respuesta se cortó o vino mal formada (lista muy larga). Probá con menos modelos o de a partes."); }
+  const matchedRaw = parsed.matched && typeof parsed.matched === "object" ? parsed.matched : parsed;
+  const matched = {};
+  for (const sku of names) { const n = toNum(matchedRaw[sku]); if (n != null) matched[sku] = n; }
+  const known = new Set(names);
+  const newModels = (Array.isArray(parsed.new) ? parsed.new : [])
+    .map((m) => ({ name: String(m?.name || "").trim(), cat: m?.cat || "Samsung", price: toNum(m?.price) }))
+    .filter((m) => m.name && !known.has(m.name));
+  return { matched, newModels };
 }
 
-const MARK_SYSTEM =
-  "El usuario manda una lista o screenshot de modelos a cotizar (texto libre, español, con precios, colores, cantidades o encabezados de sección). Devolvé SOLO un array JSON con los SKU EXACTOS de esta lista que correspondan (categoría entre corchetes):\n" +
-  CATALOG_LINES.join("\n") +
-  "\n\nReglas: ignorá precios, colores y cantidades. " + DISAMBIG +
-  ' Omití solo lo que realmente no puedas mapear. Ejemplo: ["XT2505 Edge 60 8+256", "A17 4+128 DS"]. Sin markdown, sin texto extra.';
-
-async function matchModels(text, apiKey, images = []) {
+async function matchModels(text, apiKey, system, names, images = []) {
   const out = await callGemini({
-    system: MARK_SYSTEM,
+    system,
     content: text || "Extraé los modelos de la imagen (es un screenshot de una lista de modelos a cotizar).",
     apiKey,
     json: true,
     images,
+    maxTokens: 8192,
   });
-  const parsed = JSON.parse(stripFences(out));
+  let parsed;
+  try { parsed = JSON.parse(stripFences(out)); }
+  catch { throw new Error("La respuesta se cortó (lista/imagen muy larga). Probá con menos modelos."); }
   const arr = Array.isArray(parsed)
     ? parsed
     : parsed && typeof parsed === "object"
     ? Object.values(parsed).find(Array.isArray) || []
     : [];
-  return arr.filter((x) => CATALOG_NAMES.includes(x));
+  return arr.filter((x) => names.includes(x));
 }
 
 // ---- component ----
@@ -178,6 +200,13 @@ export default function PriceDesk() {
   const [apiKey, setApiKey] = useState(() => { try { return sessionStorage.getItem("desk-secret") || ""; } catch { return ""; } });
   useEffect(() => { try { sessionStorage.setItem("desk-secret", apiKey); } catch {} }, [apiKey]);
   const [margin, setMargin] = useState(() => load(MARGIN_KEY, 3));
+  // catálogo dinámico: base (fijo) + modelos agregados por el usuario
+  const [extraCatalog, setExtraCatalog] = useState(() => load(CAT_KEY, []));
+  const catalog = useMemo(() => [...CATALOG, ...extraCatalog], [extraCatalog]);
+  const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
+  const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
+  const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
+  const [pendingNew, setPendingNew] = useState([]); // sugerencias de modelos nuevos a confirmar
   const [prices, setPrices] = useState(() => load(PRICES_KEY, {}));
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
@@ -240,6 +269,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(CLIENTS_KEY, JSON.stringify(clients)); } catch {} }, [clients]);
   useEffect(() => { try { localStorage.setItem(SHIPS_KEY, JSON.stringify(shippings)); } catch {} }, [shippings]);
   useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
+  useEffect(() => { try { localStorage.setItem(CAT_KEY, JSON.stringify(extraCatalog)); } catch {} }, [extraCatalog]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -274,6 +304,7 @@ export default function PriceDesk() {
         setShippings((sh) => resolve(d.shippings, sh, "shippings"));
         setInvoiceHistory((h) => resolve(d.invoices, h, "invoices"));
         setSnapshots((sn) => resolve(d.snapshots, sn, "snapshots"));
+        setExtraCatalog((c) => resolve(d.catalog, c, "catalog"));
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
     finally { dbReady.current = true; }
@@ -296,6 +327,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("shippings", shippings); }, [shippings]);
   useEffect(() => { syncUp("invoices", invoiceHistory); }, [invoiceHistory]);
   useEffect(() => { syncUp("snapshots", snapshots); }, [snapshots]);
+  useEffect(() => { syncUp("catalog", extraCatalog); }, [extraCatalog]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -354,17 +386,22 @@ export default function PriceDesk() {
     setParsing(true);
     setParseMsg(null);
     try {
-      const map = await parseSupplierQuote(rawText, apiKey.trim());
-      const keys = Object.keys(map);
+      const { matched, newModels } = await parseSupplierQuote(rawText, apiKey.trim(), parseSystem, catalogNames);
+      const keys = Object.keys(matched);
       setPrices((prev) => {
         const next = { ...prev };
-        for (const sku of keys) next[sku] = { ...(next[sku] || {}), [parseSupplier]: map[sku] };
+        for (const sku of keys) next[sku] = { ...(next[sku] || {}), [parseSupplier]: matched[sku] };
         return next;
       });
       stampTimes(keys.map((sku) => [sku, parseSupplier, false]));
+      // modelos nuevos → a la cola de confirmación (con el proveedor de origen)
+      const adds = newModels
+        .filter((m) => !pendingNew.some((p) => p.name === m.name))
+        .map((m) => ({ ...m, supplier: parseSupplier }));
+      if (adds.length) setPendingNew((p) => [...p, ...adds]);
       setParseMsg({
         err: false,
-        text: `Filled ${keys.length} SKU${keys.length === 1 ? "" : "s"} for ${parseSupplier}.`,
+        text: `Cargué ${keys.length} SKU${keys.length === 1 ? "" : "s"} para ${parseSupplier}${adds.length ? ` · ${adds.length} modelo(s) nuevo(s) detectado(s) → confirmá abajo` : ""}.`,
         skus: keys,
       });
     } catch (e) {
@@ -373,6 +410,20 @@ export default function PriceDesk() {
       setParsing(false);
     }
   }
+
+  // confirmar / descartar un modelo nuevo sugerido
+  function confirmNew(idx) {
+    const m = pendingNew[idx];
+    if (!m || !m.name.trim()) return;
+    setExtraCatalog((c) => (c.some((x) => x.name === m.name) || CATALOG.some((x) => x.name === m.name) ? c : [...c, { name: m.name.trim(), cat: CATEGORIES.includes(m.cat) ? m.cat : "Samsung" }]));
+    if (m.price != null) {
+      setPrices((prev) => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [m.supplier]: m.price } }));
+      stampTimes([[m.name, m.supplier, false]]);
+    }
+    setPendingNew((p) => p.filter((_, i) => i !== idx));
+  }
+  function dismissNew(idx) { setPendingNew((p) => p.filter((_, i) => i !== idx)); }
+  function editNew(idx, k, v) { setPendingNew((p) => p.map((m, i) => (i === idx ? { ...m, [k]: k === "price" ? v : v } : m))); }
 
   function saveSnapshot() {
     setSnapshots((s) => upsertWeekly(s, prices, lista));
@@ -404,7 +455,7 @@ export default function PriceDesk() {
     if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe las filas con precio fresco)`)) return;
     setLista((prev) => {
       const next = { ...prev };
-      for (const { name } of CATALOG) {
+      for (const { name } of catalog) {
         const a = rowAggregates(
           Object.fromEntries(
             SUPPLIERS.map((sp) => [sp, prices[name]?.[sp]]).filter(
@@ -439,7 +490,7 @@ export default function PriceDesk() {
   const now = Date.now();
   const { aggBySku, freshBySku } = useMemo(() => {
     const agg = {}, fresh = {};
-    for (const { name } of CATALOG) {
+    for (const { name } of catalog) {
       const fr = {};
       const freshPrices = {};
       for (const sp of SUPPLIERS) {
@@ -453,7 +504,7 @@ export default function PriceDesk() {
       agg[name] = rowAggregates(freshPrices, marginNum);
     }
     return { aggBySku: agg, freshBySku: fresh };
-  }, [prices, times, marginNum, now]);
+  }, [prices, times, marginNum, now, catalog]);
 
 
   // ---- cotizador (client quote) ----
@@ -470,19 +521,19 @@ export default function PriceDesk() {
     });
   }
   const baseQuotePrice = (sku) => (quoteSource === "lista" ? lista[sku] : aggBySku[sku]?.client);
-  const selectedSkus = CATALOG.filter((c) => selected[c.name]).map((c) => c.name);
+  const selectedSkus = catalog.filter((c) => selected[c.name]).map((c) => c.name);
 
   // selected models grouped by catalog category (catalog order)
   const quoteGroups = useMemo(() => {
     const groups = [];
     let cur = null;
-    for (const { name, cat } of CATALOG) {
+    for (const { name, cat } of catalog) {
       if (!selected[name]) continue;
       if (!cur || cur.cat !== cat) { cur = { cat, items: [] }; groups.push(cur); }
       cur.items.push(name);
     }
     return groups;
-  }, [selected]);
+  }, [selected, catalog]);
 
   // WhatsApp-ready text: "Categoria\nModelo\t$Precio", groups blank-line separated
   const quoteText = useMemo(() => {
@@ -542,7 +593,7 @@ export default function PriceDesk() {
     setShipForm(blankShip());
   }
   function importMarked() {
-    const skus = CATALOG.filter((c) => selected[c.name]).map((c) => c.name);
+    const skus = catalog.filter((c) => selected[c.name]).map((c) => c.name);
     setOrder((p) => {
       const have = new Set(p.items.map((i) => i.sku));
       const add = skus.filter((sk) => !have.has(sk)).map((sk) => ({ sku: sk, qty: 1, price: lista[sk] ?? aggBySku[sk]?.client ?? 0 }));
@@ -551,7 +602,7 @@ export default function PriceDesk() {
   }
   function setOrderField(k, v) { setOrder((p) => ({ ...p, [k]: v })); }
   function addOrderItem(sku) {
-    if (!CATALOG_NAMES.includes(sku)) return;
+    if (!catalogNames.includes(sku)) return;
     setOrder((p) => p.items.some((i) => i.sku === sku) ? p
       : { ...p, items: [...p.items, { sku, qty: 1, price: lista[sku] ?? aggBySku[sku]?.client ?? 0 }] });
     setOrderQuery("");
@@ -611,7 +662,7 @@ export default function PriceDesk() {
     if (!query.trim()) return;
     setAsking(true); setAnswerErr(null);
     try {
-      const rows = CATALOG.map(({ name, cat }) => {
+      const rows = catalog.map(({ name, cat }) => {
         const a = aggBySku[name];
         return { sku: name, cat, prices: prices[name] || {}, min: a.min, median: a.med, client: a.client };
       }).filter((r) => r.min != null);
@@ -634,7 +685,7 @@ export default function PriceDesk() {
     if (!query.trim()) return;
     setAsking(true); setMarkMsg(null);
     try {
-      const skus = await matchModels(query.trim(), apiKey.trim());
+      const skus = await matchModels(query.trim(), apiKey.trim(), markSystem, catalogNames);
       if (!skus.length) {
         setMarkMsg({ err: false, text: "No reconocí modelos del catálogo en ese texto." });
       } else {
@@ -668,7 +719,7 @@ export default function PriceDesk() {
     setAsking(true); setMarkMsg(null);
     try {
       const img = await fileToData(file);
-      const skus = await matchModels(query.trim(), apiKey.trim(), [img]);
+      const skus = await matchModels(query.trim(), apiKey.trim(), markSystem, catalogNames, [img]);
       if (!skus.length) {
         setMarkMsg({ err: false, text: "No reconocí modelos del catálogo en la imagen." });
       } else {
@@ -735,7 +786,7 @@ export default function PriceDesk() {
       <header style={s.header}>
         <div>
           <div style={s.title}>PRICE DESK</div>
-          <div style={s.subtitle}>{CATALOG.length} SKUs · {SUPPLIERS.length} suppliers · supplier comparison · adjustable margin</div>
+          <div style={s.subtitle}>{catalog.length} SKUs · {SUPPLIERS.length} suppliers · supplier comparison · adjustable margin</div>
         </div>
         <div style={s.controls}>
           <div style={s.mondayBadge}>
@@ -820,6 +871,24 @@ export default function PriceDesk() {
             )}
           </div>
         )}
+
+        {pendingNew.length > 0 && (
+          <div style={s.newWrap}>
+            <div style={s.newHead}>🆕 Modelos nuevos detectados — revisá y confirmá para agregarlos al catálogo:</div>
+            {pendingNew.map((m, i) => (
+              <div style={s.newRow} key={i}>
+                <input value={m.name} onChange={(e) => editNew(i, "name", e.target.value)} style={{ ...s.invInput, flex: 1, minWidth: 180 }} />
+                <select value={CATEGORIES.includes(m.cat) ? m.cat : "Samsung"} onChange={(e) => editNew(i, "cat", e.target.value)} style={{ ...s.invInput, width: 130 }}>
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <span style={s.newPrice}>$<input value={m.price ?? ""} onChange={(e) => editNew(i, "price", parseFloat(String(e.target.value).replace(/[^0-9.]/g, "")) || null)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a" }} /></span>
+                <span style={s.newSup}>{m.supplier}</span>
+                <button onClick={() => confirmNew(i)} style={s.newAdd}>✓ Agregar</button>
+                <button onClick={() => dismissNew(i)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* comparison table */}
@@ -835,7 +904,7 @@ export default function PriceDesk() {
               </tr>
             </thead>
             <tbody>
-              {(() => { let lc = null; return CATALOG.map(({ name, cat }) => {
+              {(() => { let lc = null; return catalog.map(({ name, cat }) => {
                 const agg = aggBySku[name];
                 const header = cat !== lc ? ((lc = cat), (
                   <tr key={"mc-" + cat}><td colSpan={4} style={s.mCat}>{cat}</td></tr>
@@ -870,7 +939,7 @@ export default function PriceDesk() {
               </tr>
             </thead>
             <tbody>
-              {CATALOG.map(({ name, cat }) => {
+              {catalog.map(({ name, cat }) => {
                 const agg = aggBySku[name];
                 const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
                 const delta = spread ? agg.med - agg.min : 0;
@@ -1084,10 +1153,10 @@ export default function PriceDesk() {
         <div style={{ ...s.invColHead, marginTop: 10 }}>ITEMS</div>
         <div style={s.cotInputRow}>
           <input list="catalog-dl" value={orderQuery}
-            onChange={(e) => { const v = e.target.value; setOrderQuery(v); if (CATALOG_NAMES.includes(v)) addOrderItem(v); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { const m = CATALOG_NAMES.find((n) => n.toLowerCase() === orderQuery.trim().toLowerCase()); if (m) addOrderItem(m); } }}
+            onChange={(e) => { const v = e.target.value; setOrderQuery(v); if (catalogNames.includes(v)) addOrderItem(v); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { const m = catalogNames.find((n) => n.toLowerCase() === orderQuery.trim().toLowerCase()); if (m) addOrderItem(m); } }}
             placeholder="Agregar modelo (Enter)…" style={s.cotSearch} />
-          <datalist id="catalog-dl">{CATALOG.map((c) => <option key={c.name} value={c.name} />)}</datalist>
+          <datalist id="catalog-dl">{catalog.map((c) => <option key={c.name} value={c.name} />)}</datalist>
           <button onClick={importMarked} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }} title="Traer los modelos tildados en la cotización de la Mesa">Traer marcados</button>
         </div>
 
@@ -1313,6 +1382,12 @@ const styles = {
   selBox: { background: "#0b0e14", border: "1px solid #1c2230", borderRadius: 4, padding: 8, fontSize: 11.5, color: "#9aa3b5" },
   selLine: { marginBottom: 2 },
   selHint: { fontSize: 10, color: "#525a6b", marginTop: 2 },
+  newWrap: { marginTop: 10, background: "#11151f", border: "1px solid #244068", borderRadius: 6, padding: 10 },
+  newHead: { fontSize: 11.5, color: "#6fa8e6", fontWeight: 600, marginBottom: 8 },
+  newRow: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" },
+  newPrice: { display: "inline-flex", alignItems: "center", gap: 2, color: "#fbbf24", fontWeight: 600 },
+  newSup: { fontSize: 10.5, color: "#6b7385", minWidth: 50 },
+  newAdd: { background: "#16a34a", border: "none", color: "#fff", padding: "5px 12px", borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600 },
   // móvil
   appMobile: { padding: "12px 12px 40px", fontSize: 13 },
   mLoadRow: { display: "flex", gap: 8, marginBottom: 14 },
