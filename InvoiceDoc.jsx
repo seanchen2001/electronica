@@ -1,5 +1,6 @@
 import React from "react";
-import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer";
+import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
+import { LOGO } from "./logo.js";
 
 // Factura / Remito PDF — replicates the trader's template.
 // mode "remito" hides Unit Price, Line Total and the money totals.
@@ -12,8 +13,9 @@ const s = StyleSheet.create({
   page: { padding: 22, fontSize: 9, fontFamily: "Helvetica", color: "#111" },
   // header
   headerRow: { flexDirection: "row", borderWidth: 1, borderColor: BORDER },
-  headerLeft: { flex: 1, padding: 10, justifyContent: "center" },
-  company: { fontSize: 15, fontFamily: "Helvetica-Bold" },
+  headerLeft: { flex: 1, padding: 10, flexDirection: "row", alignItems: "center" },
+  logo: { width: 58, height: 42, marginRight: 10 },
+  company: { fontSize: 14, fontFamily: "Helvetica-Bold" },
   metaBox: { width: 220, borderLeftWidth: 1, borderColor: BORDER },
   metaRow: { flexDirection: "row", borderBottomWidth: 1, borderColor: BORDER },
   metaK: { width: 80, padding: 4, fontFamily: "Helvetica-Bold", borderRightWidth: 1, borderColor: BORDER },
@@ -76,6 +78,7 @@ export default function InvoiceDoc({ company, client, order, mode }) {
       <Page size="LETTER" style={s.page}>
         <View style={s.headerRow}>
           <View style={s.headerLeft}>
+            <Image src={LOGO} style={s.logo} />
             <Text style={s.company}>{company.name}</Text>
           </View>
           <View style={s.metaBox}>
