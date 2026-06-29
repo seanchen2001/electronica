@@ -226,6 +226,16 @@ export default function PriceDesk() {
   const storeLoaded = useRef(false);
   const saveTimers = useRef({});
 
+  async function pushStore(key, value) {
+    try {
+      await fetch("/api/store", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-app-password": apiKey || "" },
+        body: JSON.stringify({ key, value }),
+      });
+    } catch { /* ignore */ }
+  }
+
   async function loadStore() {
     try {
       const r = await fetch("/api/store", { headers: { "x-app-password": apiKey || "" } });
@@ -233,9 +243,15 @@ export default function PriceDesk() {
       const d = await r.json();
       if (d && d.configured) {
         dbOn.current = true;
-        if (Array.isArray(d.clients) && d.clients.length) setClients(d.clients);
-        if (Array.isArray(d.shippings) && d.shippings.length) setShippings(d.shippings);
-        if (Array.isArray(d.invoices) && d.invoices.length) setInvoiceHistory(d.invoices);
+        // DB con datos -> manda la DB. DB vacía pero hay local -> migrar local a la DB.
+        const resolve = (dbVal, localVal, key) => {
+          if (Array.isArray(dbVal) && dbVal.length) return dbVal;
+          if (Array.isArray(localVal) && localVal.length) pushStore(key, localVal);
+          return localVal;
+        };
+        setClients((c) => resolve(d.clients, c, "clients"));
+        setShippings((sh) => resolve(d.shippings, sh, "shippings"));
+        setInvoiceHistory((h) => resolve(d.invoices, h, "invoices"));
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
     finally { dbReady.current = true; }
