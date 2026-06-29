@@ -8,7 +8,7 @@ import {
 } from "./price-logic.js";
 // Seed prices are NOT imported here — they're fetched from /api/data (password-gated)
 // so the numbers never land in the public bundle.
-import { PDFDownloadLink } from "@react-pdf/renderer";
+import { pdf } from "@react-pdf/renderer";
 import InvoiceDoc from "./InvoiceDoc.jsx";
 
 /**
@@ -189,6 +189,7 @@ export default function PriceDesk() {
   const [shippings, setShippings] = useState(() => load(SHIPS_KEY, []));
   const [shipForm, setShipForm] = useState(blankShip());
   const [docType, setDocType] = useState("factura"); // "factura" | "remito"
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [orderQuery, setOrderQuery] = useState("");
   const [order, setOrder] = useState({
     items: [], invoiceNo: "2427", date: today(), payment: "W/T", fob: "Miami",
@@ -472,6 +473,28 @@ export default function PriceDesk() {
   };
   const orderPiezas = order.items.reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const orderSubtotal = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.price) || 0), 0);
+
+  // Generate the PDF only on click (not on every render) — avoids saturating the browser.
+  async function downloadDoc() {
+    setPdfBusy(true);
+    try {
+      const blob = await pdf(
+        <InvoiceDoc company={COMPANY} client={clientForPdf} order={order} mode={docType} />
+      ).toBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${docType}-${order.invoiceNo}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      alert("Error generando el PDF: " + (e?.message || e));
+    } finally {
+      setPdfBusy(false);
+    }
+  }
 
   async function askDesk() {
     if (!apiKey.trim()) { setAnswerErr("Enter your Gemini API key first."); return; }
@@ -904,9 +927,9 @@ export default function PriceDesk() {
         <div style={s.invFoot}>
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b></>}</span>
           {order.items.length > 0
-            ? <PDFDownloadLink document={<InvoiceDoc company={COMPANY} client={clientForPdf} order={order} mode={docType} />} fileName={`${docType}-${order.invoiceNo}.pdf`} style={s.pdfBtn}>
-                {({ loading }) => loading ? "Generando…" : `⬇ Descargar ${docType} PDF`}
-              </PDFDownloadLink>
+            ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                {pdfBusy ? "Generando…" : `⬇ Descargar ${docType} PDF`}
+              </button>
             : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
         </div>
       </section>
