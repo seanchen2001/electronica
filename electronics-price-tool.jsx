@@ -212,6 +212,17 @@ export default function PriceDesk() {
     items: [], invoiceNo: String(nextInvoiceNo(load(HIST_KEY, []))), date: today(), payment: "W/T", fob: "Miami",
     salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0,
   });
+  const [orderClientId, setOrderClientId] = useState(""); // selección en Órdenes
+  const [orderShipId, setOrderShipId] = useState("");
+
+  // móvil → layout compacto / AI-focus
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 720px)");
+    const fn = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", fn);
+    return () => mq.removeEventListener("change", fn);
+  }, []);
 
   // ask the desk
   const [askMode, setAskMode] = useState("ask"); // "ask" | "mark"
@@ -554,10 +565,12 @@ export default function PriceDesk() {
     }));
   }
   function removeItem(idx) { setOrder((p) => ({ ...p, items: p.items.filter((_, i) => i !== idx) })); }
+  const selClient = clients.find((c) => c.id === orderClientId) || blankClient();
+  const selShip = shippings.find((sh) => sh.id === orderShipId) || blankShip();
   const clientForPdf = {
-    name: clientForm.name, ruc: clientForm.ruc, phone: clientForm.phone,
-    addressLines: (clientForm.address || "").split("\n").map((x) => x.trim()).filter(Boolean),
-    notify: shipForm.notify, direccion: shipForm.direccion, telefono: shipForm.telefono, contacto: shipForm.contacto,
+    name: selClient.name, ruc: selClient.ruc, phone: selClient.phone,
+    addressLines: (selClient.address || "").split("\n").map((x) => x.trim()).filter(Boolean),
+    notify: selShip.notify, direccion: selShip.direccion, telefono: selShip.telefono, contacto: selShip.contacto,
   };
   const orderPiezas = order.items.reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const orderSubtotal = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.price) || 0), 0);
@@ -581,7 +594,7 @@ export default function PriceDesk() {
       const totalDoc = orderSubtotal + (Number(order.shippingCost) || 0);
       setInvoiceHistory((h) => [{
         no: order.invoiceNo, date: order.date, type: docType,
-        client: clientForm.name || "—", piezas: orderPiezas, total: totalDoc, ts: Date.now(),
+        client: selClient.name || "—", piezas: orderPiezas, total: totalDoc, ts: Date.now(),
       }, ...h].slice(0, 1000));
       if (docType === "factura") {
         setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
@@ -682,8 +695,43 @@ export default function PriceDesk() {
   const s = styles;
   let lastCat = null;
 
+  const askSection = (
+    <section style={s.section}>
+      <div style={s.sectionTitle}>ASK THE DESK</div>
+      <div style={s.modeTabs}>
+        <button onClick={() => setAskMode("ask")} style={{ ...s.planTab, ...(askMode === "ask" ? s.planTabOn : {}) }}>Preguntar</button>
+        <button onClick={() => setAskMode("mark")} style={{ ...s.planTab, ...(askMode === "mark" ? s.planTabOn : {}) }}>Marcar modelos</button>
+      </div>
+      <div style={s.askRow}>
+        <input value={query} onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !asking && submitAsk()}
+          onPaste={onAskPaste}
+          placeholder={askMode === "ask"
+            ? "ej. ¿Dónde está más competitivo VITEL? ¿Qué cambió vs la semana pasada?"
+            : "Pegá modelos o un screenshot (Ctrl+V)…"}
+          style={s.askInput} />
+        {askMode === "mark" && (
+          <label style={s.imgBtn} title="Subir screenshot (OCR con Gemini)">📷
+            <input type="file" accept="image/*" style={{ display: "none" }}
+              onChange={(e) => { markFromImage(e.target.files?.[0]); e.target.value = ""; }} />
+          </label>
+        )}
+        <button onClick={submitAsk} disabled={asking} style={{ ...s.askBtn, ...(asking ? s.busy : {}) }}>
+          {asking ? "…" : askMode === "ask" ? "Ask" : "Marcar"}
+        </button>
+      </div>
+      {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
+      {askMode === "ask" && (answer
+        ? <div style={s.answerCard}>{answer}</div>
+        : <div style={s.askHint}>Responde estricto sobre la tabla actual (y tu última semana, si hay).</div>)}
+      {askMode === "mark" && (markMsg
+        ? <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>
+        : <div style={s.askHint}>Escribí/pegá una lista, pegá un screenshot o usá 📷; Gemini lee y tilda los modelos.</div>)}
+    </section>
+  );
+
   return (
-    <div style={s.app}>
+    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}) }}>
       <header style={s.header}>
         <div>
           <div style={s.title}>PRICE DESK</div>
@@ -710,11 +758,14 @@ export default function PriceDesk() {
       <div style={s.viewNav}>
         <button onClick={() => setView("mesa")} style={{ ...s.viewTab, ...(view === "mesa" ? s.viewTabOn : {}) }}>📊 Mesa de precios</button>
         <button onClick={() => setView("ordenes")} style={{ ...s.viewTab, ...(view === "ordenes" ? s.viewTabOn : {}) }}>🧾 Órdenes · factura / remito</button>
+        <button onClick={() => setView("clientes")} style={{ ...s.viewTab, ...(view === "clientes" ? s.viewTabOn : {}) }}>👤 Clientes</button>
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
       </div>
 
       {view === "mesa" && (<>
-      {/* toolbar */}
+      {isMobile && askSection}
+      {/* toolbar (solo escritorio) */}
+      {!isMobile && (
       <div style={s.toolbar}>
         <button onClick={saveSnapshot} style={s.toolBtn}>Save snapshot</button>
         <button onClick={expireAll} style={s.toolBtn}>Expirar todo (lunes)</button>
@@ -731,6 +782,14 @@ export default function PriceDesk() {
         </span>
         <button onClick={() => loadSeed(Object.keys(prices).length > 0)} style={{ ...s.toolBtn, ...s.toolBtnGhost }}>Cargar / Reset datos</button>
       </div>
+      )}
+
+      {isMobile && (
+        <div style={s.mLoadRow}>
+          <button onClick={() => loadSeed(Object.keys(prices).length > 0)} style={s.toolBtn}>Cargar datos</button>
+          <button onClick={saveSnapshot} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Guardar semana</button>
+        </div>
+      )}
 
       {Object.keys(prices).length === 0 && (
         <div style={s.loadBanner}>
@@ -765,6 +824,39 @@ export default function PriceDesk() {
 
       {/* comparison table */}
       <section style={s.section}>
+        {isMobile ? (
+          <table style={s.mTable}>
+            <thead>
+              <tr>
+                <th style={{ ...s.mTh, textAlign: "left" }}>Modelo</th>
+                <th style={s.mTh}>Mín sem.</th>
+                <th style={s.mTh}>Lista</th>
+                <th style={{ ...s.mTh, color: "#fbbf24" }}>+{marginNum}%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(() => { let lc = null; return CATALOG.map(({ name, cat }) => {
+                const agg = aggBySku[name];
+                const header = cat !== lc ? ((lc = cat), (
+                  <tr key={"mc-" + cat}><td colSpan={4} style={s.mCat}>{cat}</td></tr>
+                )) : null;
+                return (
+                  <React.Fragment key={name}>
+                    {header}
+                    <tr>
+                      <td style={{ ...s.mTd, textAlign: "left", color: "#cfd6e4" }}>{name}</td>
+                      <td style={s.mTd}>{money(agg.min)}</td>
+                      <td style={{ ...s.mTd, padding: 2 }}>
+                        <input value={lista[name] ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={s.mLista} inputMode="decimal" />
+                      </td>
+                      <td style={{ ...s.mTd, color: "#fbbf24", fontWeight: 600 }}>{agg.client != null ? money(agg.client) : "—"}</td>
+                    </tr>
+                  </React.Fragment>
+                );
+              }); })()}
+            </tbody>
+          </table>
+        ) : (<>
         <div style={s.tableWrap}>
           <table style={s.table}>
             <thead>
@@ -878,6 +970,7 @@ export default function PriceDesk() {
           <span>expirados NO cuentan para Minimo/Medio/Client</span>
           <span><span style={s.trendUp}>▲</span>/<span style={s.trendDown}>▼</span> vs snapshot · ·med = precio sobre mediana</span>
         </div>
+        </>)}
       </section>
 
       {/* cotización al cliente (para WhatsApp) */}
@@ -936,36 +1029,37 @@ export default function PriceDesk() {
 
         <div style={s.invGrid}>
           <div style={s.invCol}>
-            <div style={s.invColHead}>CLIENTE (opcional)</div>
-            <select value={clientForm.id} onChange={(e) => loadClient(e.target.value)} style={s.invInput}>
-              <option value="">— nuevo / sin cliente —</option>
+            <div style={s.invColHead}>CLIENTE</div>
+            <select value={orderClientId} onChange={(e) => setOrderClientId(e.target.value)} style={s.invInput}>
+              <option value="">— sin cliente —</option>
               {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-            <input placeholder="Nombre" value={clientForm.name} onChange={(e) => setClientField("name", e.target.value)} style={s.invInput} />
-            <textarea placeholder="Dirección (varias líneas)" value={clientForm.address} onChange={(e) => setClientField("address", e.target.value)} rows={2} style={s.invArea} />
-            <input placeholder="RUC" value={clientForm.ruc} onChange={(e) => setClientField("ruc", e.target.value)} style={s.invInput} />
-            <input placeholder="Teléfono" value={clientForm.phone} onChange={(e) => setClientField("phone", e.target.value)} style={s.invInput} />
-            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-              <button onClick={saveClient} style={s.toolBtn}>{clientForm.id ? "Actualizar" : "Guardar"} cliente</button>
-              {clientForm.id && <button onClick={deleteClient} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
-            </div>
+            {orderClientId && (
+              <div style={s.selBox}>
+                <div style={{ fontWeight: 600, color: "#cfd6e4" }}>{selClient.name}</div>
+                {selClient.address ? <div style={s.selLine}>{selClient.address}</div> : null}
+                {selClient.ruc ? <div style={s.selLine}>RUC: {selClient.ruc}</div> : null}
+                {selClient.phone ? <div style={s.selLine}>Tel: {selClient.phone}</div> : null}
+              </div>
+            )}
+            <div style={s.selHint}>Agregar / editar → tab Clientes</div>
           </div>
 
           <div style={s.invCol}>
-            <div style={s.invColHead}>ENVÍO / SHIPPING (opcional)</div>
-            <select value={shipForm.id} onChange={(e) => loadShip(e.target.value)} style={s.invInput}>
-              <option value="">— nuevo / sin envío —</option>
+            <div style={s.invColHead}>ENVÍO / SHIPPING</div>
+            <select value={orderShipId} onChange={(e) => setOrderShipId(e.target.value)} style={s.invInput}>
+              <option value="">— sin envío —</option>
               {shippings.map((sh) => <option key={sh.id} value={sh.id}>{sh.label || sh.notify}</option>)}
             </select>
-            <input placeholder="Etiqueta (ej. CIF Miami)" value={shipForm.label} onChange={(e) => setShipField("label", e.target.value)} style={s.invInput} />
-            <input placeholder="Notify" value={shipForm.notify} onChange={(e) => setShipField("notify", e.target.value)} style={s.invInput} />
-            <input placeholder="Dirección de envío" value={shipForm.direccion} onChange={(e) => setShipField("direccion", e.target.value)} style={s.invInput} />
-            <input placeholder="Teléfono" value={shipForm.telefono} onChange={(e) => setShipField("telefono", e.target.value)} style={s.invInput} />
-            <input placeholder="Contacto" value={shipForm.contacto} onChange={(e) => setShipField("contacto", e.target.value)} style={s.invInput} />
-            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-              <button onClick={saveShip} style={s.toolBtn}>{shipForm.id ? "Actualizar" : "Guardar"} envío</button>
-              {shipForm.id && <button onClick={deleteShip} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
-            </div>
+            {orderShipId && (
+              <div style={s.selBox}>
+                {selShip.notify ? <div style={s.selLine}>Notify: {selShip.notify}</div> : null}
+                {selShip.direccion ? <div style={s.selLine}>{selShip.direccion}</div> : null}
+                {selShip.telefono ? <div style={s.selLine}>Tel: {selShip.telefono}</div> : null}
+                {selShip.contacto ? <div style={s.selLine}>Contacto: {selShip.contacto}</div> : null}
+              </div>
+            )}
+            <div style={s.selHint}>Agregar / editar → tab Clientes</div>
           </div>
 
           <div style={s.invCol}>
@@ -1034,42 +1128,47 @@ export default function PriceDesk() {
 
       )}
 
-      {view === "mesa" && (<>
-      {/* ask the desk */}
-      <section style={s.section}>
-        <div style={s.sectionTitle}>ASK THE DESK</div>
-        <div style={s.modeTabs}>
-          <button onClick={() => setAskMode("ask")} style={{ ...s.planTab, ...(askMode === "ask" ? s.planTabOn : {}) }}>Preguntar</button>
-          <button onClick={() => setAskMode("mark")} style={{ ...s.planTab, ...(askMode === "mark" ? s.planTabOn : {}) }}>Marcar modelos</button>
-        </div>
-        <div style={s.askRow}>
-          <input value={query} onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !asking && submitAsk()}
-            onPaste={onAskPaste}
-            placeholder={askMode === "ask"
-              ? "ej. ¿Dónde está más competitivo VITEL? ¿Qué cambió vs el último snapshot?"
-              : "Pegá modelos o un screenshot (Ctrl+V)… (ej. G15, A17 4+128, Motorola G86 PWR)"}
-            style={s.askInput} />
-          {askMode === "mark" && (
-            <label style={s.imgBtn} title="Subir screenshot (OCR con Gemini)">
-              📷 Imagen
-              <input type="file" accept="image/*" style={{ display: "none" }}
-                onChange={(e) => { markFromImage(e.target.files?.[0]); e.target.value = ""; }} />
-            </label>
-          )}
-          <button onClick={submitAsk} disabled={asking} style={{ ...s.askBtn, ...(asking ? s.busy : {}) }}>
-            {asking ? "…" : askMode === "ask" ? "Ask" : "Marcar"}
-          </button>
-        </div>
-        {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
-        {askMode === "ask" && (answer
-          ? <div style={s.answerCard}>{answer}</div>
-          : <div style={s.askHint}>Responde estricto sobre la tabla actual (y tu último snapshot, si hay).</div>)}
-        {askMode === "mark" && (markMsg
-          ? <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>
-          : <div style={s.askHint}>Escribí/pegá una lista, pegá un screenshot (Ctrl+V) o usá 📷 Imagen; Gemini lee y tilda los modelos del catálogo (se suman a lo ya marcado).</div>)}
-      </section>
-      </>)}
+      {view === "mesa" && !isMobile && askSection}
+
+      {view === "clientes" && (
+        <section style={s.section}>
+          <div style={s.sectionTitle}>CLIENTES Y ENVÍOS — agregar / editar (después se eligen en Órdenes)</div>
+          <div style={s.invGrid}>
+            <div style={s.invCol}>
+              <div style={s.invColHead}>CLIENTE</div>
+              <select value={clientForm.id} onChange={(e) => loadClient(e.target.value)} style={s.invInput}>
+                <option value="">— nuevo cliente —</option>
+                {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <input placeholder="Nombre" value={clientForm.name} onChange={(e) => setClientField("name", e.target.value)} style={s.invInput} />
+              <textarea placeholder="Dirección (varias líneas)" value={clientForm.address} onChange={(e) => setClientField("address", e.target.value)} rows={2} style={s.invArea} />
+              <input placeholder="RUC" value={clientForm.ruc} onChange={(e) => setClientField("ruc", e.target.value)} style={s.invInput} />
+              <input placeholder="Teléfono" value={clientForm.phone} onChange={(e) => setClientField("phone", e.target.value)} style={s.invInput} />
+              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                <button onClick={saveClient} style={s.toolBtn}>{clientForm.id ? "Actualizar" : "Guardar"} cliente</button>
+                {clientForm.id && <button onClick={deleteClient} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
+              </div>
+            </div>
+            <div style={s.invCol}>
+              <div style={s.invColHead}>ENVÍO / SHIPPING</div>
+              <select value={shipForm.id} onChange={(e) => loadShip(e.target.value)} style={s.invInput}>
+                <option value="">— nuevo envío —</option>
+                {shippings.map((sh) => <option key={sh.id} value={sh.id}>{sh.label || sh.notify}</option>)}
+              </select>
+              <input placeholder="Etiqueta (ej. CIF Miami)" value={shipForm.label} onChange={(e) => setShipField("label", e.target.value)} style={s.invInput} />
+              <input placeholder="Notify" value={shipForm.notify} onChange={(e) => setShipField("notify", e.target.value)} style={s.invInput} />
+              <input placeholder="Dirección de envío" value={shipForm.direccion} onChange={(e) => setShipField("direccion", e.target.value)} style={s.invInput} />
+              <input placeholder="Teléfono" value={shipForm.telefono} onChange={(e) => setShipField("telefono", e.target.value)} style={s.invInput} />
+              <input placeholder="Contacto" value={shipForm.contacto} onChange={(e) => setShipField("contacto", e.target.value)} style={s.invInput} />
+              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                <button onClick={saveShip} style={s.toolBtn}>{shipForm.id ? "Actualizar" : "Guardar"} envío</button>
+                {shipForm.id && <button onClick={deleteShip} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
+              </div>
+            </div>
+          </div>
+          <div style={s.selHint}>{clients.length} cliente(s) · {shippings.length} envío(s) guardados.</div>
+        </section>
+      )}
 
       {view === "historial" && (
         <section style={s.section}>
@@ -1118,7 +1217,7 @@ const styles = {
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", borderBottom: "1px solid #1c2230", paddingBottom: 12, marginBottom: 10, flexWrap: "wrap", gap: 12 },
   title: { fontSize: 18, fontWeight: 700, letterSpacing: 1.5, color: "#e8ecf3" },
   subtitle: { fontSize: 11, color: "#6b7385", marginTop: 2 },
-  controls: { display: "flex", gap: 14, alignItems: "flex-end" },
+  controls: { display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" },
   ctrlLabel: { display: "flex", flexDirection: "column", gap: 4 },
   ctrlText: { fontSize: 10, color: "#6b7385", letterSpacing: 1 },
   mondayBadge: { display: "flex", flexDirection: "column", gap: 4, background: "#11151f", border: "1px solid #244068", borderRadius: 4, padding: "4px 10px" },
@@ -1200,7 +1299,7 @@ const styles = {
   ovTag: { color: "#6b7385", fontSize: 10 },
   quotePreviewLabel: { fontSize: 10.5, color: "#6b7385", marginBottom: 4 },
   quotePreview: { background: "#0b0e14", border: "1px solid #232a3a", borderRadius: 6, padding: 12, fontFamily: "inherit", fontSize: 12.5, color: "#dfe4ee", lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0, overflowX: "auto" },
-  viewNav: { display: "flex", gap: 8, marginBottom: 16 },
+  viewNav: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" },
   viewTab: { background: "#11151f", border: "1px solid #232a3a", color: "#9aa3b5", padding: "9px 18px", borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600 },
   viewTabOn: { background: "#1e293b", borderColor: "#3b82f6", color: "#e8ecf3" },
   invGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 6 },
@@ -1211,6 +1310,17 @@ const styles = {
   invFields: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 },
   invField: { display: "flex", flexDirection: "column", gap: 3 },
   invFieldLbl: { fontSize: 9.5, color: "#6b7385" },
+  selBox: { background: "#0b0e14", border: "1px solid #1c2230", borderRadius: 4, padding: 8, fontSize: 11.5, color: "#9aa3b5" },
+  selLine: { marginBottom: 2 },
+  selHint: { fontSize: 10, color: "#525a6b", marginTop: 2 },
+  // móvil
+  appMobile: { padding: "12px 12px 40px", fontSize: 13 },
+  mLoadRow: { display: "flex", gap: 8, marginBottom: 14 },
+  mTable: { borderCollapse: "collapse", width: "100%", fontSize: 12 },
+  mTh: { background: "#11151f", color: "#8b94a7", fontSize: 10, fontWeight: 600, textAlign: "right", padding: "6px 6px", borderBottom: "1px solid #1c2230", position: "sticky", top: 0 },
+  mTd: { padding: "5px 6px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
+  mCat: { background: "#0e1218", color: "#8b94a7", fontSize: 9.5, fontWeight: 700, letterSpacing: 1, padding: "4px 6px", textTransform: "uppercase" },
+  mLista: { width: 56, background: "#0b0e14", border: "1px solid #232a3a", color: "#c4b5fd", textAlign: "right", fontFamily: "inherit", fontSize: 12, padding: "3px 4px", borderRadius: 3, outline: "none" },
   invTable: { borderCollapse: "collapse", width: "100%", marginTop: 8, border: "1px solid #1c2230" },
   invTh: { background: "#11151f", color: "#8b94a7", fontSize: 10, fontWeight: 600, textAlign: "right", padding: "6px 8px", borderBottom: "1px solid #1c2230" },
   invTd: { padding: "3px 8px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums" },
