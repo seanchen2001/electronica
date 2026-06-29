@@ -45,6 +45,12 @@ const SNAP_KEY = "desk-snapshots-v1";
 const TIMES_KEY = "desk-times-v1";
 const CLIENTS_KEY = "desk-clients-v1";
 const SHIPS_KEY = "desk-ships-v1";
+const HIST_KEY = "desk-invoices-v1";
+
+function nextInvoiceNo(hist) {
+  const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
+  return nums.length ? Math.max(...nums) + 1 : 2427;
+}
 const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
 
 function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
@@ -188,11 +194,12 @@ export default function PriceDesk() {
   const [clientForm, setClientForm] = useState(blankClient());
   const [shippings, setShippings] = useState(() => load(SHIPS_KEY, []));
   const [shipForm, setShipForm] = useState(blankShip());
+  const [invoiceHistory, setInvoiceHistory] = useState(() => load(HIST_KEY, []));
   const [docType, setDocType] = useState("factura"); // "factura" | "remito"
   const [pdfBusy, setPdfBusy] = useState(false);
   const [orderQuery, setOrderQuery] = useState("");
   const [order, setOrder] = useState({
-    items: [], invoiceNo: "2427", date: today(), payment: "W/T", fob: "Miami",
+    items: [], invoiceNo: String(nextInvoiceNo(load(HIST_KEY, []))), date: today(), payment: "W/T", fob: "Miami",
     salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0,
   });
 
@@ -211,6 +218,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(SNAP_KEY, JSON.stringify(snapshots)); } catch {} }, [snapshots]);
   useEffect(() => { try { localStorage.setItem(CLIENTS_KEY, JSON.stringify(clients)); } catch {} }, [clients]);
   useEffect(() => { try { localStorage.setItem(SHIPS_KEY, JSON.stringify(shippings)); } catch {} }, [shippings]);
+  useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
 
   const marginNum = parseFloat(margin) || 0;
   const prevSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
@@ -489,6 +497,15 @@ export default function PriceDesk() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
+      // log al historial + autoincremento del invoice # (solo en factura)
+      const totalDoc = orderSubtotal + (Number(order.shippingCost) || 0);
+      setInvoiceHistory((h) => [{
+        no: order.invoiceNo, date: order.date, type: docType,
+        client: clientForm.name || "—", piezas: orderPiezas, total: totalDoc, ts: Date.now(),
+      }, ...h].slice(0, 1000));
+      if (docType === "factura") {
+        setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
+      }
     } catch (e) {
       alert("Error generando el PDF: " + (e?.message || e));
     } finally {
@@ -613,6 +630,7 @@ export default function PriceDesk() {
       <div style={s.viewNav}>
         <button onClick={() => setView("mesa")} style={{ ...s.viewTab, ...(view === "mesa" ? s.viewTabOn : {}) }}>📊 Mesa de precios</button>
         <button onClick={() => setView("ordenes")} style={{ ...s.viewTab, ...(view === "ordenes" ? s.viewTabOn : {}) }}>🧾 Órdenes · factura / remito</button>
+        <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
       </div>
 
       {view === "mesa" && (<>
@@ -972,6 +990,45 @@ export default function PriceDesk() {
           : <div style={s.askHint}>Escribí/pegá una lista, pegá un screenshot (Ctrl+V) o usá 📷 Imagen; Gemini lee y tilda los modelos del catálogo (se suman a lo ya marcado).</div>)}
       </section>
       </>)}
+
+      {view === "historial" && (
+        <section style={s.section}>
+          <div style={s.sectionTitle}>HISTORIAL — facturas / remitos generados · próximo Invoice # {nextInvoiceNo(invoiceHistory)}</div>
+          {invoiceHistory.length === 0 ? (
+            <div style={s.askHint}>Todavía no generaste ningún documento. El Invoice # se cuenta solo a medida que generás facturas.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                <button onClick={() => { if (confirm("¿Borrar todo el historial? (el contador del Invoice # vuelve a empezar)")) setInvoiceHistory([]); }} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Limpiar historial</button>
+              </div>
+              <table style={s.invTable}>
+                <thead>
+                  <tr>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Invoice #</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Tipo</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Cliente</th>
+                    <th style={s.invTh}>Piezas</th>
+                    <th style={s.invTh}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invoiceHistory.map((h, i) => (
+                    <tr key={i}>
+                      <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4", fontWeight: 600 }}>{h.no}</td>
+                      <td style={{ ...s.invTd, textAlign: "left" }}>{h.date}</td>
+                      <td style={{ ...s.invTd, textAlign: "left" }}>{h.type}</td>
+                      <td style={{ ...s.invTd, textAlign: "left" }}>{h.client}</td>
+                      <td style={s.invTd}>{h.piezas}</td>
+                      <td style={{ ...s.invTd, color: "#fbbf24" }}>{money(h.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </section>
+      )}
     </div>
   );
 }

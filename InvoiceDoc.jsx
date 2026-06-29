@@ -55,10 +55,10 @@ const s = StyleSheet.create({
   totals: { flexDirection: "row", borderTopWidth: 1, borderColor: BLACK },
   piezas: { flex: 1, flexDirection: "row", padding: 10, alignItems: "center" },
   piezasVal: { fontFamily: "Helvetica-Bold", fontSize: 11, marginLeft: 12 },
-  totalsRight: { width: 275 },
-  totLine: { flexDirection: "row", minHeight: 18, alignItems: "center" },
-  totK: { flex: 1, textAlign: "right", paddingHorizontal: 8, paddingVertical: 3 },
-  totV: { width: 110, textAlign: "right", paddingHorizontal: 10, paddingVertical: 3, backgroundColor: GRAY },
+  totLabels: { width: 110 },
+  totLabel: { textAlign: "right", paddingHorizontal: 8, paddingVertical: 3.5 },
+  totAmounts: { width: 110, backgroundColor: GRAY },
+  totAmt: { textAlign: "right", paddingHorizontal: 10, paddingVertical: 3.5 },
 
   // shipping box
   shipWrap: { padding: 10 },
@@ -163,11 +163,18 @@ export default function InvoiceDoc({ company, client, order, mode }) {
               <Text style={s.piezasVal}>{totalPiezas}</Text>
             </View>
             {!remito && (
-              <View style={s.totalsRight}>
-                <View style={s.totLine}><Text style={s.totK}>Subtotal</Text><Text style={s.totV}>{money(subtotal)}</Text></View>
-                <View style={s.totLine}><Text style={s.totK}>Shipping</Text><Text style={s.totV}>{shipping ? money(shipping) : ""}</Text></View>
-                <View style={s.totLine}><Text style={[s.totK, s.hLabel]}>Total</Text><Text style={[s.totV, s.hLabel]}>{money(total)}</Text></View>
-              </View>
+              <>
+                <View style={s.totLabels}>
+                  <Text style={s.totLabel}>Subtotal</Text>
+                  <Text style={s.totLabel}>Shipping</Text>
+                  <Text style={[s.totLabel, s.hLabel]}>Total</Text>
+                </View>
+                <View style={s.totAmounts}>
+                  <Text style={s.totAmt}>{money(subtotal)}</Text>
+                  <Text style={s.totAmt}>{shipping ? money(shipping) : " "}</Text>
+                  <Text style={[s.totAmt, s.hLabel]}>{money(total)}</Text>
+                </View>
+              </>
             )}
           </View>
 
