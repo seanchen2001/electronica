@@ -55,6 +55,16 @@ const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
 
 function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
 function today() { return fmtDMY(Date.now()); }
+
+// Un snapshot por semana (lunes del ciclo). Guardar de nuevo en la misma semana
+// pisa el anterior → queda "el último precio de la semana". Mantiene ~2 años.
+function upsertWeekly(snaps, prices, lista) {
+  const week = mondayStart();
+  const entry = { week, ts: Date.now(), prices: JSON.parse(JSON.stringify(prices)), lista: JSON.parse(JSON.stringify(lista)) };
+  const i = snaps.findIndex((sn) => sn.week === week);
+  const next = i >= 0 ? snaps.map((sn, k) => (k === i ? entry : sn)) : [...snaps, entry];
+  return next.slice(-104);
+}
 function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "" }; }
 function blankShip() { return { id: "", label: "", notify: "", direccion: "", telefono: "", contacto: "" }; }
 
@@ -252,6 +262,7 @@ export default function PriceDesk() {
         setClients((c) => resolve(d.clients, c, "clients"));
         setShippings((sh) => resolve(d.shippings, sh, "shippings"));
         setInvoiceHistory((h) => resolve(d.invoices, h, "invoices"));
+        setSnapshots((sn) => resolve(d.snapshots, sn, "snapshots"));
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
     finally { dbReady.current = true; }
@@ -273,9 +284,23 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("clients", clients); }, [clients]);
   useEffect(() => { syncUp("shippings", shippings); }, [shippings]);
   useEffect(() => { syncUp("invoices", invoiceHistory); }, [invoiceHistory]);
+  useEffect(() => { syncUp("snapshots", snapshots); }, [snapshots]);
+  // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
+  const weekTimer = useRef();
+  useEffect(() => {
+    if (!Object.keys(prices).length) return;
+    clearTimeout(weekTimer.current);
+    weekTimer.current = setTimeout(() => setSnapshots((s) => upsertWeekly(s, prices, lista)), 3000);
+    return () => clearTimeout(weekTimer.current);
+  }, [prices, lista]);
 
   const marginNum = parseFloat(margin) || 0;
-  const prevSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
+  // semana anterior (para el trend ▲▼): el snapshot más reciente de una semana previa
+  const prevSnap = useMemo(() => {
+    const cur = mondayStart();
+    const prior = snapshots.filter((sn) => (sn.week ?? 0) < cur).sort((a, b) => (b.week ?? b.ts) - (a.week ?? a.ts));
+    return prior[0] || null;
+  }, [snapshots]);
 
   function stampTimes(pairs) {
     // pairs: array of [sku, supplier]; null value => remove stamp
@@ -339,7 +364,7 @@ export default function PriceDesk() {
   }
 
   function saveSnapshot() {
-    setSnapshots((s) => [...s, { ts: Date.now(), prices: clone(prices) }].slice(-52));
+    setSnapshots((s) => upsertWeekly(s, prices, lista));
   }
   // Fetch the seed prices/lista from the server (password-gated) and load them.
   async function loadSeed(confirmOverwrite) {
