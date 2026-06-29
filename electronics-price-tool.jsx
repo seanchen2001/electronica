@@ -395,6 +395,7 @@ export default function PriceDesk() {
         return next;
       });
       stampTimes(keys.map((sku) => [sku, parseSupplier, false]));
+      setRawText("");
       // modelos nuevos → a la cola de confirmación (con el proveedor de origen)
       const adds = newModels
         .filter((m) => !pendingNew.some((p) => p.name === m.name))
@@ -518,6 +519,9 @@ export default function PriceDesk() {
   function toggleSelected(sku) {
     setSelected((p) => { const n = { ...p }; if (n[sku]) delete n[sku]; else n[sku] = true; return n; });
   }
+  function selectAll() { setSelected(Object.fromEntries(catalog.map((c) => [c.name, true]))); }
+  function selectPriced() { setSelected(Object.fromEntries(catalog.filter((c) => aggBySku[c.name]?.min != null).map((c) => [c.name, true]))); }
+  function selectNone() { setSelected({}); }
   function changeSource(src) { setQuoteSource(src); setQuoteOverrides({}); } // switching resets manual edits
   function setOverride(sku, v) {
     setQuoteOverrides((p) => {
@@ -680,6 +684,7 @@ export default function PriceDesk() {
         JSON.stringify({ margin_pct: marginNum, rows, previous }) + "\n\nQuestion: " + query;
       const text = await callGemini({ system: DESK_SYSTEM, content, apiKey: apiKey.trim(), maxTokens: 1024 });
       setAnswer(text);
+      setQuery("");
     } catch (e) {
       setAnswerErr(e.message);
     } finally {
@@ -693,6 +698,7 @@ export default function PriceDesk() {
     setAsking(true); setMarkMsg(null);
     try {
       const skus = await matchModels(query.trim(), apiKey.trim(), markSystem, catalogNames);
+      setQuery("");
       if (!skus.length) {
         setMarkMsg({ err: false, text: "No reconocí modelos del catálogo en ese texto." });
       } else {
@@ -727,6 +733,7 @@ export default function PriceDesk() {
     try {
       const img = await fileToData(file);
       const skus = await matchModels(query.trim(), apiKey.trim(), markSystem, catalogNames, [img]);
+      setQuery("");
       if (!skus.length) {
         setMarkMsg({ err: false, text: "No reconocí modelos del catálogo en la imagen." });
       } else {
@@ -900,11 +907,20 @@ export default function PriceDesk() {
 
       {/* comparison table */}
       <section style={s.section}>
-        <label style={s.hideToggle}>
-          <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} style={s.chk} />
-          Ocultar modelos sin precio esta semana
-          {hideEmpty && <span style={s.hideCount}> ({catalog.length - visibleCatalog.length} ocultos)</span>}
-        </label>
+        <div style={s.tableBar}>
+          <label style={s.hideToggle}>
+            <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} style={s.chk} />
+            Ocultar sin precio
+            {hideEmpty && <span style={s.hideCount}> ({catalog.length - visibleCatalog.length})</span>}
+          </label>
+          <span style={s.markGroup}>
+            <span style={s.hideCount}>Marcar:</span>
+            <button onClick={selectAll} style={s.miniBtn}>Todo</button>
+            <button onClick={selectPriced} style={s.miniBtn}>Con precio</button>
+            <button onClick={selectNone} style={s.miniBtn}>Ninguno</button>
+            <span style={s.hideCount}>{selectedSkus.length} marcado(s)</span>
+          </span>
+        </div>
         {isMobile ? (
           <table style={s.mTable}>
             <thead>
@@ -918,6 +934,9 @@ export default function PriceDesk() {
             <tbody>
               {(() => { let lc = null; return visibleCatalog.map(({ name, cat }) => {
                 const agg = aggBySku[name];
+                const pmv = prevSnap ? SUPPLIERS.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+                const pMin = pmv.length ? Math.min(...pmv) : null;
+                const mt = (agg.min != null && pMin != null && pMin !== agg.min) ? { up: agg.min > pMin, prev: pMin } : null;
                 const header = cat !== lc ? ((lc = cat), (
                   <tr key={"mc-" + cat}><td colSpan={4} style={s.mCat}>{cat}</td></tr>
                 )) : null;
@@ -926,7 +945,7 @@ export default function PriceDesk() {
                     {header}
                     <tr>
                       <td style={s.mModel}>{name}</td>
-                      <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}</td>
+                      <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}{mt && <span style={mt.up ? s.trendUp : s.trendDown}> {mt.up ? "▲" : "▼"}{Math.round(mt.prev)}</span>}</td>
                       <td style={{ ...s.mTd, padding: 2 }}>
                         <input value={lista[name] ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={s.mLista} inputMode="decimal" />
                       </td>
@@ -955,6 +974,9 @@ export default function PriceDesk() {
                 const agg = aggBySku[name];
                 const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
                 const delta = spread ? agg.med - agg.min : 0;
+                const prevMinVals = prevSnap ? SUPPLIERS.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+                const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
+                const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin } : null;
                 const header =
                   cat !== lastCat ? ((lastCat = cat), (
                     <tr key={"cat-" + cat}>
@@ -992,7 +1014,7 @@ export default function PriceDesk() {
                         const prev = prevSnap?.prices?.[name]?.[sp];
                         let trend = null;
                         if (has && typeof prev === "number" && prev !== v)
-                          trend = { up: v > prev, pct: ((v - prev) / prev) * 100 };
+                          trend = { up: v > prev, pct: ((v - prev) / prev) * 100, prev };
                         const title = [
                           state === "expired" && "Expirado — re-pedir",
                           state === "recent" && "Recién actualizado (24h)",
@@ -1011,15 +1033,19 @@ export default function PriceDesk() {
                                 inputMode="decimal"
                               />
                               {trend && (
-                                <span style={trend.up ? s.trendUp : s.trendDown}>
-                                  {trend.up ? "▲" : "▼"}{Math.abs(trend.pct).toFixed(0)}
+                                <span style={trend.up ? s.trendUp : s.trendDown}
+                                  title={`Semana pasada: $${Math.round(trend.prev)} (${trend.up ? "+" : ""}${Math.abs(trend.pct).toFixed(0)}%)`}>
+                                  {trend.up ? "▲" : "▼"}{Math.round(trend.prev)}
                                 </span>
                               )}
                             </span>
                           </td>
                         );
                       })}
-                      <td style={{ ...s.td, ...s.tdNum }}>{money(agg.min)}</td>
+                      <td style={{ ...s.td, ...s.tdNum }}>
+                        {money(agg.min)}
+                        {minTrend && <span style={minTrend.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(minTrend.prev)}`}> {minTrend.up ? "▲" : "▼"}{Math.round(minTrend.prev)}</span>}
+                      </td>
                       <td style={{ ...s.td, ...s.tdNum, ...s.tdMuted }}>
                         {money(agg.med)}
                         {spread && <span style={s.deltaTag} title={`Δ ${money(delta)} entre mínimo y medio`}> Δ{Math.round(delta)}</span>}
@@ -1409,8 +1435,11 @@ const styles = {
   mModel: { padding: "5px 4px", textAlign: "left", borderBottom: "1px solid #151a26", color: "#cfd6e4", whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.25 },
   mCat: { background: "#0e1218", color: "#8b94a7", fontSize: 9.5, fontWeight: 700, letterSpacing: 1, padding: "4px 6px", textTransform: "uppercase" },
   mLista: { width: "100%", boxSizing: "border-box", background: "#0b0e14", border: "1px solid #232a3a", color: "#c4b5fd", textAlign: "right", fontFamily: "inherit", fontSize: 11.5, padding: "3px 4px", borderRadius: 3, outline: "none" },
-  hideToggle: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#9aa3b5", marginBottom: 10, cursor: "pointer" },
-  hideCount: { color: "#525a6b" },
+  tableBar: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 10 },
+  hideToggle: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#9aa3b5", cursor: "pointer" },
+  hideCount: { color: "#525a6b", fontSize: 11 },
+  markGroup: { display: "inline-flex", alignItems: "center", gap: 5, flexWrap: "wrap" },
+  miniBtn: { background: "#1f2937", border: "1px solid #2a3346", color: "#cfd6e4", padding: "3px 9px", borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 11 },
   invTable: { borderCollapse: "collapse", width: "100%", marginTop: 8, border: "1px solid #1c2230" },
   invTh: { background: "#11151f", color: "#8b94a7", fontSize: 10, fontWeight: 600, textAlign: "right", padding: "6px 8px", borderBottom: "1px solid #1c2230" },
   invTd: { padding: "3px 8px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums" },
