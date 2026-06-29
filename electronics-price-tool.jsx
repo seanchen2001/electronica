@@ -32,7 +32,7 @@ const DISAMBIG =
 const PARSE_SYSTEM =
   "You are a price extraction assistant for a phone wholesaler. The user pastes ONE supplier's raw quote in any messy format (Spanish, colors, quantities, section headers). Extract the unit price per phone model and map each to the closest standard SKU from this EXACT list (category in brackets):\n" +
   CATALOG_LINES.join("\n") +
-  "\n\nRules: ignore colors and quantities. " + DISAMBIG +
+  "\n\nRules: ignore colors. If a model lists SEVERAL prices by quantity (a price ladder, e.g. a base price for '150+ PCS' plus cheaper prices for 20/50+ units), take the HIGHEST price (the worst / most conservative — the base price for the smallest quantity). " + DISAMBIG +
   ' Use the exact SKU string as the JSON key. Respond ONLY with a JSON object like {"S26 ULTRA 12/512GB 5G": 1020}. Omit only what you truly cannot map. No markdown, no commentary.';
 
 const DESK_SYSTEM =
