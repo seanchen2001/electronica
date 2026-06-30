@@ -160,8 +160,9 @@ const toNum = (v) => {
   return typeof n === "number" && !Number.isNaN(n) ? n : null;
 };
 
-async function parseSupplierQuote(rawText, apiKey, system, names) {
-  const text = await callGemini({ system, content: rawText, apiKey, json: true, maxTokens: 8192 });
+async function parseSupplierQuote(rawText, apiKey, system, names, images = []) {
+  const content = rawText || (images.length ? "Extraé los precios de este screenshot de la cotización del proveedor." : "");
+  const text = await callGemini({ system, content, apiKey, json: true, images, maxTokens: 8192 });
   let parsed;
   try { parsed = JSON.parse(stripFences(text)); }
   catch { throw new Error("La respuesta se cortó o vino mal formada (lista muy larga). Probá con menos modelos o de a partes."); }
@@ -288,7 +289,7 @@ export default function PriceDesk() {
     } catch { /* ignore */ }
   }
 
-  async function loadStore() {
+  async function loadStore({ skipObjects = false } = {}) {
     try {
       const r = await fetch("/api/store", { headers: { "x-app-password": apiKey || "" } });
       if (!r.ok) return;
@@ -301,11 +302,22 @@ export default function PriceDesk() {
           if (Array.isArray(localVal) && localVal.length) pushStore(key, localVal);
           return localVal;
         };
+        // objetos (prices/times/lista): la DB manda si tiene datos; si está vacía pero hay local, migramos
+        const resolveObj = (dbVal, localVal, key) => {
+          if (dbVal && typeof dbVal === "object" && Object.keys(dbVal).length) return dbVal;
+          if (localVal && Object.keys(localVal).length) pushStore(key, localVal);
+          return localVal;
+        };
         setClients((c) => resolve(d.clients, c, "clients"));
         setShippings((sh) => resolve(d.shippings, sh, "shippings"));
         setInvoiceHistory((h) => resolve(d.invoices, h, "invoices"));
         setSnapshots((sn) => resolve(d.snapshots, sn, "snapshots"));
         setExtraCatalog((c) => resolve(d.catalog, c, "catalog"));
+        if (!skipObjects) {
+          setPrices((p) => resolveObj(d.prices, p, "prices"));
+          setTimes((t) => resolveObj(d.times, t, "times"));
+          setLista((l) => resolveObj(d.lista, l, "lista"));
+        }
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
     finally { dbReady.current = true; }
@@ -329,6 +341,9 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("invoices", invoiceHistory); }, [invoiceHistory]);
   useEffect(() => { syncUp("snapshots", snapshots); }, [snapshots]);
   useEffect(() => { syncUp("catalog", extraCatalog); }, [extraCatalog]);
+  useEffect(() => { syncUp("prices", prices); }, [prices]);
+  useEffect(() => { syncUp("times", times); }, [times]);
+  useEffect(() => { syncUp("lista", lista); }, [lista]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -381,13 +396,14 @@ export default function PriceDesk() {
     });
   }
 
-  async function runParse() {
+  async function runParse(file = null) {
     if (!apiKey.trim()) { setParseMsg({ err: true, text: "Enter your Gemini API key first." }); return; }
-    if (!rawText.trim()) { setParseMsg({ err: true, text: "Paste a quote to parse." }); return; }
+    if (!rawText.trim() && !file) { setParseMsg({ err: true, text: "Pegá una cotización o subí una foto." }); return; }
     setParsing(true);
     setParseMsg(null);
     try {
-      const { matched, newModels } = await parseSupplierQuote(rawText, apiKey.trim(), parseSystem, catalogNames);
+      const images = file ? [await fileToData(file)] : [];
+      const { matched, newModels } = await parseSupplierQuote(rawText, apiKey.trim(), parseSystem, catalogNames, images);
       const keys = Object.keys(matched);
       setPrices((prev) => {
         const next = { ...prev };
@@ -444,7 +460,7 @@ export default function PriceDesk() {
       setPrices(sp || {});
       setLista(sl || {});
       setTimes(timesForPrices(sp || {}));
-      loadStore(); // traer clientes / envíos / historial de la base, si está configurada
+      loadStore({ skipObjects: true }); // traer clientes / envíos / historial; NO pisar el seed recién cargado
     } catch (e) {
       alert("Error cargando datos: " + e.message);
     }
@@ -873,9 +889,14 @@ export default function PriceDesk() {
           <textarea value={rawText} onChange={(e) => setRawText(e.target.value)} rows={2}
             placeholder='e.g. "S26 ultra 512gb 1020 · A07 4+128 94 · Negro Motorola G06 100"'
             style={s.parseArea} />
-          <button onClick={runParse} disabled={parsing} style={{ ...s.parseBtn, ...(parsing ? s.busy : {}) }}>
+          <button onClick={() => runParse()} disabled={parsing} style={{ ...s.parseBtn, ...(parsing ? s.busy : {}) }}>
             {parsing ? "Parsing…" : `Parse → ${parseSupplier}`}
           </button>
+          <label style={{ ...s.parseBtn, ...s.toolBtnGhost, ...(parsing ? s.busy : {}), cursor: parsing ? "default" : "pointer", display: "inline-flex", alignItems: "center" }} title="Subí un screenshot de la cotización — extrae precios y detecta modelos nuevos">
+            📷 Foto
+            <input type="file" accept="image/*" disabled={parsing} style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) runParse(f); e.target.value = ""; }} />
+          </label>
         </div>
         {parseMsg && (
           <div style={parseMsg.err ? s.errorMsg : s.okMsg}>
@@ -936,7 +957,7 @@ export default function PriceDesk() {
                 const agg = aggBySku[name];
                 const pmv = prevSnap ? SUPPLIERS.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
                 const pMin = pmv.length ? Math.min(...pmv) : null;
-                const mt = (agg.min != null && pMin != null && pMin !== agg.min) ? { up: agg.min > pMin, prev: pMin } : null;
+                const mt = (agg.min != null && pMin != null && pMin !== agg.min) ? { up: agg.min > pMin, prev: pMin, diff: agg.min - pMin } : null;
                 const header = cat !== lc ? ((lc = cat), (
                   <tr key={"mc-" + cat}><td colSpan={4} style={s.mCat}>{cat}</td></tr>
                 )) : null;
@@ -945,7 +966,7 @@ export default function PriceDesk() {
                     {header}
                     <tr>
                       <td style={s.mModel}>{name}</td>
-                      <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}{mt && <span style={mt.up ? s.trendUp : s.trendDown}> {mt.up ? "▲" : "▼"}{Math.round(mt.prev)}</span>}</td>
+                      <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}{mt && <span style={mt.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(mt.prev)}`}> {mt.up ? "▲" : "▼"}{Math.abs(Math.round(mt.diff))}</span>}</td>
                       <td style={{ ...s.mTd, padding: 2 }}>
                         <input value={lista[name] ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={s.mLista} inputMode="decimal" />
                       </td>
@@ -976,7 +997,7 @@ export default function PriceDesk() {
                 const delta = spread ? agg.med - agg.min : 0;
                 const prevMinVals = prevSnap ? SUPPLIERS.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
                 const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
-                const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin } : null;
+                const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
                 const header =
                   cat !== lastCat ? ((lastCat = cat), (
                     <tr key={"cat-" + cat}>
@@ -1014,7 +1035,7 @@ export default function PriceDesk() {
                         const prev = prevSnap?.prices?.[name]?.[sp];
                         let trend = null;
                         if (has && typeof prev === "number" && prev !== v)
-                          trend = { up: v > prev, pct: ((v - prev) / prev) * 100, prev };
+                          trend = { up: v > prev, pct: ((v - prev) / prev) * 100, prev, diff: v - prev };
                         const title = [
                           state === "expired" && "Expirado — re-pedir",
                           state === "recent" && "Recién actualizado (24h)",
@@ -1034,8 +1055,8 @@ export default function PriceDesk() {
                               />
                               {trend && (
                                 <span style={trend.up ? s.trendUp : s.trendDown}
-                                  title={`Semana pasada: $${Math.round(trend.prev)} (${trend.up ? "+" : ""}${Math.abs(trend.pct).toFixed(0)}%)`}>
-                                  {trend.up ? "▲" : "▼"}{Math.round(trend.prev)}
+                                  title={`Semana pasada: $${Math.round(trend.prev)} → ahora $${Math.round(v)} (${trend.up ? "+" : "−"}${Math.abs(trend.pct).toFixed(0)}%)`}>
+                                  {trend.up ? "▲" : "▼"}{Math.abs(Math.round(trend.diff))}
                                 </span>
                               )}
                             </span>
@@ -1044,7 +1065,7 @@ export default function PriceDesk() {
                       })}
                       <td style={{ ...s.td, ...s.tdNum }}>
                         {money(agg.min)}
-                        {minTrend && <span style={minTrend.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(minTrend.prev)}`}> {minTrend.up ? "▲" : "▼"}{Math.round(minTrend.prev)}</span>}
+                        {minTrend && <span style={minTrend.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(minTrend.prev)} → ahora $${Math.round(agg.min)}`}> {minTrend.up ? "▲" : "▼"}{Math.abs(Math.round(minTrend.diff))}</span>}
                       </td>
                       <td style={{ ...s.td, ...s.tdNum, ...s.tdMuted }}>
                         {money(agg.med)}
@@ -1075,7 +1096,7 @@ export default function PriceDesk() {
           <span><span style={{ ...s.legChip, ...s.cellOut }} /> 🔥 outlier (&gt;15% bajo mediana)</span>
           <span><span style={{ ...s.legChip, borderLeft: "3px solid #7c3aed", background: "#191526" }} /> Lista violeta = hay spread mín≠medio (revisar)</span>
           <span>expirados NO cuentan para Minimo/Medio/Client</span>
-          <span><span style={s.trendUp}>▲</span>/<span style={s.trendDown}>▼</span> vs snapshot · ·med = precio sobre mediana</span>
+          <span><span style={s.trendUp}>▲</span>/<span style={s.trendDown}>▼</span> = cuánto subió/bajó vs la semana pasada (en $) · ·med = precio sobre mediana</span>
         </div>
         </>)}
       </section>
