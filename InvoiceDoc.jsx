@@ -79,7 +79,8 @@ const s = StyleSheet.create({
   footer: { textAlign: "center", fontSize: 11, color: "#333", marginTop: 12 },
 });
 
-export default function InvoiceDoc({ company, client, order, mode }) {
+// Una página (factura o remito). Se reusa para el remito por proveedor.
+function InvoicePage({ company, client, order, mode }) {
   const remito = mode === "remito";
   const items = order.items || [];
   const totalPiezas = items.reduce((a, i) => a + (Number(i.qty) || 0), 0);
@@ -95,7 +96,6 @@ export default function InvoiceDoc({ company, client, order, mode }) {
   ];
 
   return (
-    <Document>
       <Page size="LETTER" style={s.page}>
         <View style={s.outer}>
           {/* header */}
@@ -204,6 +204,26 @@ export default function InvoiceDoc({ company, client, order, mode }) {
 
         <Text style={s.footer}>Thank you for your business!</Text>
       </Page>
+  );
+}
+
+// Factura / remito normal (al cliente): un documento de una página.
+export default function InvoiceDoc({ company, client, order, mode }) {
+  return (
+    <Document>
+      <InvoicePage company={company} client={client} order={order} mode={mode} />
+    </Document>
+  );
+}
+
+// Remitos por proveedor: un documento con una página por proveedor, sin precios.
+// groups: [{ supplier, client, order }] — order.items son solo las líneas de ese proveedor.
+export function RemitosDoc({ company, groups }) {
+  return (
+    <Document>
+      {groups.map((g, i) => (
+        <InvoicePage key={i} company={company} client={g.client} order={g.order} mode="remito" />
+      ))}
     </Document>
   );
 }

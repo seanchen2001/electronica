@@ -9,7 +9,7 @@ import {
 // Seed prices are NOT imported here — they're fetched from /api/data (password-gated)
 // so the numbers never land in the public bundle.
 import { pdf } from "@react-pdf/renderer";
-import InvoiceDoc from "./InvoiceDoc.jsx";
+import InvoiceDoc, { RemitosDoc } from "./InvoiceDoc.jsx";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -717,6 +717,41 @@ export default function PriceDesk() {
     }
   }
 
+  // agrupar las líneas de la orden por proveedor (las sin proveedor van juntas)
+  const remitoGroups = useMemo(() => {
+    const by = {};
+    for (const it of order.items) {
+      const key = it.supplier || "(sin proveedor)";
+      (by[key] ||= []).push(it);
+    }
+    return Object.entries(by).map(([supplier, items]) => ({ supplier, items }));
+  }, [order.items]);
+
+  async function downloadSupplierRemitos() {
+    if (!order.items.length) return;
+    setPdfBusy(true);
+    try {
+      const groups = remitoGroups.map(({ supplier, items }) => ({
+        supplier,
+        client: { name: supplier, addressLines: [] },
+        order: { ...order, items },
+      }));
+      const blob = await pdf(<RemitosDoc company={COMPANY} groups={groups} />).toBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `remitos-proveedor-${order.invoiceNo}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      alert("Error generando los remitos: " + (e?.message || e));
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   async function askDesk() {
     if (!apiKey.trim()) { setAnswerErr("Enter your Gemini API key first."); return; }
     if (!query.trim()) return;
@@ -1300,9 +1335,15 @@ export default function PriceDesk() {
         <div style={s.invFoot}>
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b> · Costo: <b style={{ color: "#9aa4b2" }}>{money(orderCost)}</b> · Margen: <b style={{ color: "#4ade80" }}>{money(orderSubtotal - orderCost)}</b></>}</span>
           {order.items.length > 0
-            ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
-                {pdfBusy ? "Generando…" : `⬇ Descargar ${docType} PDF`}
-              </button>
+            ? <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                  {pdfBusy ? "Generando…" : `⬇ Descargar ${docType} PDF`}
+                </button>
+                <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un remito sin precios por cada proveedor (una página por proveedor)"
+                  style={{ ...s.pdfBtn, ...s.toolBtnGhost, ...(pdfBusy ? s.busy : {}), marginLeft: 0, cursor: pdfBusy ? "default" : "pointer" }}>
+                  ⬇ Remitos x proveedor ({remitoGroups.length})
+                </button>
+              </span>
             : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
         </div>
       </section>
