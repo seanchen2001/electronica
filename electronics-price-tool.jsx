@@ -724,22 +724,7 @@ export default function PriceDesk() {
         supplierCosts, items: JSON.parse(JSON.stringify(order.items)), ts: Date.now(),
       }, ...h].slice(0, 1000));
       if (docType === "factura") {
-        // cuenta corriente: cargo al cliente (total) + cargo por proveedor (costo×qty)
-        const ref = order.invoiceNo;
-        const auto = [{
-          id: uid(), ts: Date.now(), side: "client", party: selClient.name || "—",
-          type: "cargo", amount: totalDoc, concept: `Factura #${ref}`, date: order.date, ref,
-        }];
-        for (const { supplier, items } of remitoGroups) {
-          if (supplier === "(sin proveedor)") continue;
-          const cost = items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
-          if (cost > 0) auto.push({
-            id: uid(), ts: Date.now(), side: "supplier", party: supplier,
-            type: "cargo", amount: cost, concept: `Compra factura #${ref}`, date: order.date, ref,
-          });
-        }
-        // idempotente: reemplaza cargos automáticos previos de la misma factura
-        setLedger((lg) => [...auto, ...lg.filter((e) => !(e.ref === ref && e.type === "cargo"))]);
+        // las cuentas (cargo al cliente + compra a cada proveedor) se DERIVAN del historial.
         setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
       }
     } catch (e) {
@@ -788,9 +773,26 @@ export default function PriceDesk() {
   // saldo = lo que el cliente nos debe (side client) / lo que le debemos al proveedor (side supplier).
   // cargo suma, pago resta. La factura genera cargos automáticos; los pagos se registran a mano.
   const ledgerView = useMemo(() => {
-    const byParty = {};
+    const movs = [];
+    // CARGOS derivados de las facturas (no se guardan)
+    for (const f of invoiceHistory) {
+      if (f.type !== "factura") continue;
+      if (ledgerSide === "client") {
+        movs.push({ id: `f-${f.no}-cli`, ts: f.ts, party: f.client || "—", type: "cargo", amount: Number(f.total) || 0, concept: `Factura #${f.no}`, date: f.date, ref: f.no, derived: true });
+      } else {
+        for (const [sp, c] of Object.entries(f.supplierCosts || {})) {
+          movs.push({ id: `f-${f.no}-${sp}`, ts: f.ts, party: sp, type: "cargo", amount: Number(c) || 0, concept: `Compra factura #${f.no}`, date: f.date, ref: f.no, derived: true });
+        }
+      }
+    }
+    // MANUALES de este lado: pagos y gastos (los cargos automáticos viejos se ignoran, ahora se derivan)
     for (const e of ledger) {
       if (e.side !== ledgerSide) continue;
+      if (e.type === "cargo" && e.ref) continue;
+      movs.push(e);
+    }
+    const byParty = {};
+    for (const e of movs) {
       const p = e.party || "—";
       (byParty[p] ||= { party: p, saldo: 0, movs: [] });
       byParty[p].saldo += (e.type === "pago" ? -1 : 1) * (Number(e.amount) || 0);
@@ -800,7 +802,7 @@ export default function PriceDesk() {
     parties.forEach((p) => p.movs.sort((a, b) => (b.ts || 0) - (a.ts || 0)));
     const total = parties.reduce((a, p) => a + p.saldo, 0);
     return { parties, total };
-  }, [ledger, ledgerSide]);
+  }, [invoiceHistory, ledger, ledgerSide]);
 
   function registerPay() {
     const amt = parseFloat(String(payForm.amount).replace(/[^0-9.]/g, "")) || 0;
@@ -809,7 +811,7 @@ export default function PriceDesk() {
     if (amt <= 0) { alert("Ingresá un monto mayor a 0."); return; }
     setLedger((lg) => [{
       id: uid(), ts: Date.now(), side: ledgerSide, party,
-      type: payForm.type, amount: amt, concept: payForm.concept.trim() || (payForm.type === "pago" ? "Pago" : "Ajuste"),
+      type: payForm.type, amount: amt, concept: payForm.concept.trim() || (payForm.type === "pago" ? "Pago" : "Gasto envío proveedor"),
       date: payForm.date || today(), ref: "",
     }, ...lg]);
     setPayForm({ party: "", amount: "", concept: "", date: today(), type: "pago" });
@@ -817,6 +819,10 @@ export default function PriceDesk() {
   function deleteLedgerEntry(id) {
     if (!confirm("¿Borrar este movimiento?")) return;
     setLedger((lg) => lg.filter((e) => e.id !== id));
+  }
+  function deleteInvoice(ts, no) {
+    if (!confirm(`¿Borrar la factura #${no}? Se recalculan cuentas y PnL.`)) return;
+    setInvoiceHistory((h) => h.filter((x) => x.ts !== ts));
   }
   // partes conocidas para el datalist según el lado
   const ledgerParties = useMemo(() => {
@@ -837,11 +843,12 @@ export default function PriceDesk() {
       piezas += Number(s.piezas) || 0;
       for (const [sp, c] of Object.entries(s.supplierCosts || {})) bySupplier[sp] = (bySupplier[sp] || 0) + (Number(c) || 0);
     }
-    const margen = ventas - costo;
+    const gastos = ledger.filter((e) => e.type === "gasto").reduce((a, e) => a + (Number(e.amount) || 0), 0);
+    const margen = ventas - costo - gastos;
     const margenPct = ventas ? (margen / ventas) * 100 : 0;
     const supplierRows = Object.entries(bySupplier).map(([sp, c]) => ({ sp, c })).sort((a, b) => b.c - a.c);
-    return { sales, ventas, costo, margen, margenPct, piezas, supplierRows };
-  }, [invoiceHistory]);
+    return { sales, ventas, costo, gastos, margen, margenPct, piezas, supplierRows };
+  }, [invoiceHistory, ledger]);
 
   async function askDesk() {
     if (!apiKey.trim()) { setAnswerErr("Enter your Gemini API key first."); return; }
@@ -1505,9 +1512,9 @@ export default function PriceDesk() {
               <datalist id="ledger-parties">{ledgerParties.map((p) => <option key={p} value={p} />)}</datalist>
             </label>
             <label style={s.ctrlLabel}><span style={s.ctrlText}>TIPO</span>
-              <select value={payForm.type} onChange={(e) => setPayForm((f) => ({ ...f, type: e.target.value }))} style={{ ...s.invInput, width: 110 }}>
+              <select value={payForm.type} onChange={(e) => setPayForm((f) => ({ ...f, type: e.target.value }))} style={{ ...s.invInput, width: 140 }}>
                 <option value="pago">Pago (−)</option>
-                <option value="cargo">Cargo (+)</option>
+                <option value="gasto">Gasto envío (+)</option>
               </select>
             </label>
             <label style={s.ctrlLabel}><span style={s.ctrlText}>MONTO</span>
@@ -1550,7 +1557,7 @@ export default function PriceDesk() {
                         <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{e.concept}</td>
                         <td style={{ ...s.invTd, color: "#fbbf24" }}>{e.type !== "pago" ? money(e.amount) : ""}</td>
                         <td style={{ ...s.invTd, color: "#4ade80" }}>{e.type === "pago" ? money(e.amount) : ""}</td>
-                        <td style={s.invTd}><span style={s.chipX} onClick={() => deleteLedgerEntry(e.id)}>×</span></td>
+                        <td style={s.invTd}>{e.derived ? <span style={{ color: "#3a4255", fontSize: 10 }} title="Derivado de la factura — se edita/borra desde el Historial">🔒</span> : <span style={s.chipX} onClick={() => deleteLedgerEntry(e.id)}>×</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1572,6 +1579,7 @@ export default function PriceDesk() {
                 {[
                   ["Ventas", money(pnlView.ventas), "#fbbf24"],
                   ["Costo", money(pnlView.costo), "#9aa4b2"],
+                  ["Gastos envío", money(pnlView.gastos), "#9aa4b2"],
                   ["Margen", money(pnlView.margen), "#4ade80"],
                   ["Margen %", pnlView.margenPct.toFixed(1) + "%", "#4ade80"],
                   ["Piezas", String(pnlView.piezas), "#cfd6e4"],
@@ -1656,6 +1664,9 @@ export default function PriceDesk() {
                     <th style={{ ...s.invTh, textAlign: "left" }}>Cliente</th>
                     <th style={s.invTh}>Piezas</th>
                     <th style={s.invTh}>Total</th>
+                    <th style={s.invTh}>Costo</th>
+                    <th style={s.invTh}>Margen</th>
+                    <th style={s.invTh}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1667,6 +1678,9 @@ export default function PriceDesk() {
                       <td style={{ ...s.invTd, textAlign: "left" }}>{h.client}</td>
                       <td style={s.invTd}>{h.piezas}</td>
                       <td style={{ ...s.invTd, color: "#fbbf24" }}>{money(h.total)}</td>
+                      <td style={{ ...s.invTd, color: "#9aa4b2" }}>{h.cost != null ? money(h.cost) : "—"}</td>
+                      <td style={{ ...s.invTd, color: (h.margin || 0) >= 0 ? "#4ade80" : "#f87171" }}>{h.margin != null ? money(h.margin) : "—"}</td>
+                      <td style={s.invTd}><span style={s.chipX} onClick={() => deleteInvoice(h.ts, h.no)}>×</span></td>
                     </tr>
                   ))}
                 </tbody>
