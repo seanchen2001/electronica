@@ -215,7 +215,6 @@ export default function PriceDesk() {
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
   const [snapshots, setSnapshots] = useState(() => load(SNAP_KEY, []));
-  const [listaPct, setListaPct] = useState(3); // % para el "pegar en Lista"
 
   // parse panel
   const [parseSupplier, setParseSupplier] = useState(SUPPLIERS[0]);
@@ -475,24 +474,6 @@ export default function PriceDesk() {
   }
   function resetToSeed() { loadSeed(true); }
 
-  // Bulk-fill Lista = Minimo + listaPct% para cada fila con precio conocido.
-  // Prefiere el mínimo fresco; si toda la fila está expirada, cae al último mínimo conocido
-  // (si no, después de cada lunes el botón no pegaba nada).
-  function fillLista() {
-    const pct = parseFloat(listaPct) || 0;
-    if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe cada fila con precio cargado)`)) return;
-    setLista((prev) => {
-      const next = { ...prev };
-      for (const { name } of catalog) {
-        const all = SUPPLIERS.map((sp) => [sp, prices[name]?.[sp]]).filter(([, v]) => typeof v === "number");
-        const fresh = all.filter(([sp]) => classifyFreshness(times[name]?.[sp], Date.now()) !== "expired");
-        const a = rowAggregates(Object.fromEntries(fresh.length ? fresh : all), marginNum);
-        if (a.min != null) next[name] = Math.round(a.min * (1 + pct / 100));
-      }
-      return next;
-    });
-  }
-
   // Mark every current price as expired (e.g. it's a new Monday — re-request all).
   function expireAll() {
     if (!confirm("Mark all current prices as expired? (a previous-cycle timestamp)")) return;
@@ -516,18 +497,29 @@ export default function PriceDesk() {
     for (const { name } of catalog) {
       const fr = {};
       const freshPrices = {};
+      const allVals = [];
       for (const sp of SUPPLIERS) {
         const v = prices[name]?.[sp];
         if (typeof v !== "number") continue;
+        allVals.push(v);
         const st = classifyFreshness(times[name]?.[sp], now);
         fr[sp] = st;
         if (st !== "expired") freshPrices[sp] = v;
       }
       fresh[name] = fr;
       agg[name] = rowAggregates(freshPrices, marginNum);
+      agg[name].minAny = allVals.length ? Math.min(...allVals) : null; // incluye expirados (fallback)
     }
     return { aggBySku: agg, freshBySku: fresh };
   }, [prices, times, marginNum, now, catalog]);
+
+  // Precio de Lista (venta) de una fila: override manual si lo hay; si no, Mín + MARGIN% en vivo.
+  // Prefiere el mínimo fresco; si está todo expirado, cae al último mínimo conocido.
+  function listaFor(name) {
+    if (lista[name] != null) return lista[name];
+    const base = aggBySku[name]?.min ?? aggBySku[name]?.minAny;
+    return base != null ? Math.round(base * (1 + marginNum / 100)) : null;
+  }
 
   // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
   const visibleCatalog = useMemo(
@@ -552,7 +544,7 @@ export default function PriceDesk() {
       return n;
     });
   }
-  const baseQuotePrice = (sku) => (quoteSource === "lista" ? lista[sku] : aggBySku[sku]?.client);
+  const baseQuotePrice = (sku) => (quoteSource === "lista" ? listaFor(sku) : aggBySku[sku]?.client);
   const selectedSkus = catalog.filter((c) => selected[c.name]).map((c) => c.name);
 
   // selected models grouped by catalog category (catalog order)
@@ -570,7 +562,7 @@ export default function PriceDesk() {
   // WhatsApp-ready text: "Categoria\nModelo\t$Precio", groups blank-line separated
   const quoteText = useMemo(() => {
     const priceOf = (sku) =>
-      sku in quoteOverrides ? quoteOverrides[sku] : quoteSource === "lista" ? lista[sku] : aggBySku[sku]?.client;
+      sku in quoteOverrides ? quoteOverrides[sku] : quoteSource === "lista" ? listaFor(sku) : aggBySku[sku]?.client;
     return quoteGroups
       .map((g) => {
         const lines = g.items.map((sku) => {
@@ -645,7 +637,7 @@ export default function PriceDesk() {
   function newOrderLine(sku) {
     const sup = cheapestSupplier(sku);
     const cat = catalog.find((c) => c.name === sku)?.cat || "";
-    return { sku, cat, qty: 1, color: "", spec: specForCat(cat), supplier: sup, cost: prices[sku]?.[sup] ?? 0, price: lista[sku] ?? aggBySku[sku]?.client ?? 0 };
+    return { sku, cat, qty: 1, color: "", spec: specForCat(cat), supplier: sup, cost: prices[sku]?.[sup] ?? 0, price: listaFor(sku) ?? aggBySku[sku]?.client ?? 0 };
   }
   // splitear una línea en varios colores: duplica la fila (qty 1, color en blanco para llenar)
   function splitItem(idx) {
@@ -1015,12 +1007,7 @@ export default function PriceDesk() {
       <div style={s.toolbar}>
         <button onClick={saveSnapshot} style={s.toolBtn}>Save snapshot</button>
         <button onClick={expireAll} style={s.toolBtn}>Expirar todo (lunes)</button>
-        <span style={s.listaFill}>
-          Lista = Mín +
-          <input type="number" value={listaPct} onChange={(e) => setListaPct(e.target.value)} step="0.5" style={s.listaPctInput} />
-          %
-          <button onClick={fillLista} style={s.toolBtn}>Pegar en Lista</button>
-        </span>
+        <span style={s.listaFill}>Lista = Mín + MARGIN% (en vivo) · escribí en una celda para fijar un precio manual</span>
         <span style={s.toolNote}>
           {snapshots.length} snapshot{snapshots.length === 1 ? "" : "s"}
           {prevSnap && ` · last ${new Date(prevSnap.ts).toISOString().slice(0, 10)}`}
@@ -1133,7 +1120,7 @@ export default function PriceDesk() {
                       <td style={s.mModel}>{name}</td>
                       <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}{mt && <span style={mt.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(mt.prev)}`}> {mt.up ? "▲" : "▼"}{Math.abs(Math.round(mt.diff))}</span>}</td>
                       <td style={{ ...s.mTd, padding: 2 }}>
-                        <input value={lista[name] ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={s.mLista} inputMode="decimal" />
+                        <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={{ ...s.mLista, ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
                       </td>
                       <td style={{ ...s.mTd, color: "#fbbf24", fontWeight: 600 }}>{agg.client != null ? "$" + Math.round(agg.client).toLocaleString() : "—"}</td>
                     </tr>
@@ -1238,8 +1225,9 @@ export default function PriceDesk() {
                       </td>
                       <td style={{ ...s.td, ...s.tdCell, ...(spread ? s.listaSpread : {}) }}
                         title={spread ? `Spread: mín ${money(agg.min)} / medio ${money(agg.med)} — conviene revisar Lista` : undefined}>
-                        <input value={lista[name] ?? ""} onChange={(e) => setListaCell(name, e.target.value)}
-                          style={{ ...s.cellInput, ...(spread ? s.listaInputSpread : {}) }} inputMode="decimal" />
+                        <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)}
+                          title={lista[name] == null ? `Auto: Mín + ${marginNum}% (escribí para fijar un precio manual; borrá para volver al automático)` : "Precio manual (borrá para volver al automático)"}
+                          style={{ ...s.cellInput, ...(spread ? s.listaInputSpread : {}), ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
                       </td>
                       <td style={{ ...s.td, ...s.tdNum, ...s.tdMine }}
                         title={agg.bestIsOutlier ? `Outlier — priced from median ${money(agg.med)} × ${(1 + marginNum / 100).toFixed(3)}` : undefined}>
@@ -1707,6 +1695,7 @@ const styles = {
   toolNote: { fontSize: 10.5, color: "#6b7385" },
   loadBanner: { display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", background: "#13233a", border: "1px solid #244068", color: "#cfd6e4", borderRadius: 6, padding: "8px 12px", marginBottom: 16, fontSize: 12 },
   listaFill: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, color: "#9aa3b5" },
+  listaAuto: { color: "#7c8597", fontStyle: "italic" },
   listaPctInput: { width: 44, background: "#0b0e14", border: "1px solid #232a3a", color: "#e8ecf3", borderRadius: 3, textAlign: "right", fontFamily: "inherit", fontSize: 11, padding: "2px 4px", outline: "none" },
   deltaTag: { color: "#a78bfa", fontSize: 9, marginLeft: 2 },
   listaSpread: { borderLeft: "2px solid #7c3aed", background: "#191526" },
