@@ -709,11 +709,19 @@ export default function PriceDesk() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-      // log al historial + autoincremento del invoice # (solo en factura)
+      // log al historial = base de datos de la transacción completa (+ autoincremento del invoice #)
       const totalDoc = orderSubtotal + (Number(order.shippingCost) || 0);
+      const supplierCosts = {};
+      for (const { supplier, items } of remitoGroups) {
+        if (supplier === "(sin proveedor)") continue;
+        supplierCosts[supplier] = items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
+      }
       setInvoiceHistory((h) => [{
         no: order.invoiceNo, date: order.date, type: docType,
-        client: selClient.name || "—", piezas: orderPiezas, total: totalDoc, ts: Date.now(),
+        client: selClient.name || "—", clientId: orderClientId,
+        piezas: orderPiezas, subtotal: orderSubtotal, shipping: Number(order.shippingCost) || 0,
+        total: totalDoc, cost: orderCost, margin: orderSubtotal - orderCost,
+        supplierCosts, items: JSON.parse(JSON.stringify(order.items)), ts: Date.now(),
       }, ...h].slice(0, 1000));
       if (docType === "factura") {
         // cuenta corriente: cargo al cliente (total) + cargo por proveedor (costo×qty)
@@ -817,6 +825,23 @@ export default function PriceDesk() {
     else SUPPLIERS.forEach((s) => set.add(s));
     return [...set].sort();
   }, [ledger, ledgerSide, clients]);
+
+  // PnL / Margen — agregado desde el historial (solo facturas = ventas)
+  const pnlView = useMemo(() => {
+    const sales = invoiceHistory.filter((h) => h.type === "factura");
+    let ventas = 0, costo = 0, piezas = 0;
+    const bySupplier = {};
+    for (const s of sales) {
+      ventas += Number(s.subtotal ?? s.total) || 0;
+      costo += Number(s.cost) || 0;
+      piezas += Number(s.piezas) || 0;
+      for (const [sp, c] of Object.entries(s.supplierCosts || {})) bySupplier[sp] = (bySupplier[sp] || 0) + (Number(c) || 0);
+    }
+    const margen = ventas - costo;
+    const margenPct = ventas ? (margen / ventas) * 100 : 0;
+    const supplierRows = Object.entries(bySupplier).map(([sp, c]) => ({ sp, c })).sort((a, b) => b.c - a.c);
+    return { sales, ventas, costo, margen, margenPct, piezas, supplierRows };
+  }, [invoiceHistory]);
 
   async function askDesk() {
     if (!apiKey.trim()) { setAnswerErr("Enter your Gemini API key first."); return; }
@@ -975,6 +1000,7 @@ export default function PriceDesk() {
         <button onClick={() => setView("ordenes")} style={{ ...s.viewTab, ...(view === "ordenes" ? s.viewTabOn : {}) }}>🧾 Órdenes · factura / remito</button>
         <button onClick={() => setView("clientes")} style={{ ...s.viewTab, ...(view === "clientes" ? s.viewTabOn : {}) }}>👤 Clientes</button>
         <button onClick={() => setView("cuentas")} style={{ ...s.viewTab, ...(view === "cuentas" ? s.viewTabOn : {}) }}>💰 Cuentas</button>
+        <button onClick={() => setView("pnl")} style={{ ...s.viewTab, ...(view === "pnl" ? s.viewTabOn : {}) }}>📈 PnL</button>
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
       </div>
 
@@ -1509,9 +1535,10 @@ export default function PriceDesk() {
                   <thead>
                     <tr>
                       <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
+                      <th style={{ ...s.invTh, textAlign: "left" }}>Factura #</th>
                       <th style={{ ...s.invTh, textAlign: "left" }}>Concepto</th>
-                      <th style={s.invTh}>Cargo</th>
-                      <th style={s.invTh}>Pago</th>
+                      <th style={s.invTh}>Entrada (cargo)</th>
+                      <th style={s.invTh}>Salida (pago)</th>
                       <th style={s.invTh}></th>
                     </tr>
                   </thead>
@@ -1519,6 +1546,7 @@ export default function PriceDesk() {
                     {p.movs.map((e) => (
                       <tr key={e.id}>
                         <td style={{ ...s.invTd, textAlign: "left" }}>{e.date}</td>
+                        <td style={{ ...s.invTd, textAlign: "left", color: "#6fa8e6" }}>{e.ref ? `#${e.ref}` : "—"}</td>
                         <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{e.concept}</td>
                         <td style={{ ...s.invTd, color: "#fbbf24" }}>{e.type !== "pago" ? money(e.amount) : ""}</td>
                         <td style={{ ...s.invTd, color: "#4ade80" }}>{e.type === "pago" ? money(e.amount) : ""}</td>
@@ -1529,6 +1557,82 @@ export default function PriceDesk() {
                 </table>
               </div>
             ))
+          )}
+        </section>
+      )}
+
+      {view === "pnl" && (
+        <section style={s.section}>
+          <div style={s.sectionTitle}>PnL / MARGEN — desde las facturas generadas (ventas)</div>
+          {pnlView.sales.length === 0 ? (
+            <div style={s.askHint}>Todavía no hay facturas. Generá una factura en Órdenes y acá ves ventas, costo y margen.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                {[
+                  ["Ventas", money(pnlView.ventas), "#fbbf24"],
+                  ["Costo", money(pnlView.costo), "#9aa4b2"],
+                  ["Margen", money(pnlView.margen), "#4ade80"],
+                  ["Margen %", pnlView.margenPct.toFixed(1) + "%", "#4ade80"],
+                  ["Piezas", String(pnlView.piezas), "#cfd6e4"],
+                  ["Facturas", String(pnlView.sales.length), "#cfd6e4"],
+                ].map(([k, v, c]) => (
+                  <div key={k} style={{ background: "#11151f", border: "1px solid #1c2230", borderRadius: 6, padding: "10px 14px", minWidth: 110 }}>
+                    <div style={{ fontSize: 10, color: "#6b7385", letterSpacing: 1 }}>{k.toUpperCase()}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: c }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ ...s.sectionTitle, marginTop: 4 }}>Por factura</div>
+              <table style={s.invTable}>
+                <thead>
+                  <tr>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>#</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Cliente</th>
+                    <th style={s.invTh}>Piezas</th>
+                    <th style={s.invTh}>Venta</th>
+                    <th style={s.invTh}>Costo</th>
+                    <th style={s.invTh}>Margen</th>
+                    <th style={s.invTh}>%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pnlView.sales.map((s2, i) => {
+                    const venta = Number(s2.subtotal ?? s2.total) || 0;
+                    const costo = Number(s2.cost) || 0;
+                    const mg = venta - costo;
+                    return (
+                      <tr key={i}>
+                        <td style={{ ...s.invTd, textAlign: "left", color: "#6fa8e6" }}>#{s2.no}</td>
+                        <td style={{ ...s.invTd, textAlign: "left" }}>{s2.date}</td>
+                        <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{s2.client}</td>
+                        <td style={s.invTd}>{s2.piezas}</td>
+                        <td style={{ ...s.invTd, color: "#fbbf24" }}>{money(venta)}</td>
+                        <td style={{ ...s.invTd, color: "#9aa4b2" }}>{money(costo)}</td>
+                        <td style={{ ...s.invTd, color: mg >= 0 ? "#4ade80" : "#f87171" }}>{money(mg)}</td>
+                        <td style={{ ...s.invTd, color: "#9aa4b2" }}>{venta ? ((mg / venta) * 100).toFixed(0) + "%" : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {pnlView.supplierRows.length > 0 && (
+                <>
+                  <div style={{ ...s.sectionTitle, marginTop: 16 }}>Costo comprado por proveedor</div>
+                  <table style={s.invTable}>
+                    <thead><tr><th style={{ ...s.invTh, textAlign: "left" }}>Proveedor</th><th style={s.invTh}>Costo total</th></tr></thead>
+                    <tbody>
+                      {pnlView.supplierRows.map(({ sp, c }) => (
+                        <tr key={sp}><td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{sp}</td><td style={{ ...s.invTd, color: "#9aa4b2" }}>{money(c)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </>
           )}
         </section>
       )}
