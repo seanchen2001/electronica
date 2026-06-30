@@ -63,12 +63,14 @@ const CLIENTS_KEY = "desk-clients-v1";
 const SHIPS_KEY = "desk-ships-v1";
 const HIST_KEY = "desk-invoices-v1";
 const CAT_KEY = "desk-extra-catalog-v1";
+const LEDGER_KEY = "desk-ledger-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
   return nums.length ? Math.max(...nums) + 1 : 2427;
 }
 const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
 function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
 function today() { return fmtDMY(Date.now()); }
@@ -236,6 +238,9 @@ export default function PriceDesk() {
   const [shippings, setShippings] = useState(() => load(SHIPS_KEY, []));
   const [shipForm, setShipForm] = useState(blankShip());
   const [invoiceHistory, setInvoiceHistory] = useState(() => load(HIST_KEY, []));
+  const [ledger, setLedger] = useState(() => load(LEDGER_KEY, [])); // cuentas corrientes (movimientos)
+  const [ledgerSide, setLedgerSide] = useState("client"); // "client" | "supplier"
+  const [payForm, setPayForm] = useState({ party: "", amount: "", concept: "", date: today(), type: "pago" });
   const [docType, setDocType] = useState("factura"); // "factura" | "remito"
   const [pdfBusy, setPdfBusy] = useState(false);
   const [orderQuery, setOrderQuery] = useState("");
@@ -272,6 +277,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(SHIPS_KEY, JSON.stringify(shippings)); } catch {} }, [shippings]);
   useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
   useEffect(() => { try { localStorage.setItem(CAT_KEY, JSON.stringify(extraCatalog)); } catch {} }, [extraCatalog]);
+  useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -313,6 +319,7 @@ export default function PriceDesk() {
         setInvoiceHistory((h) => resolve(d.invoices, h, "invoices"));
         setSnapshots((sn) => resolve(d.snapshots, sn, "snapshots"));
         setExtraCatalog((c) => resolve(d.catalog, c, "catalog"));
+        setLedger((lg) => resolve(d.ledger, lg, "ledger"));
         if (!skipObjects) {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
           setTimes((t) => resolveObj(d.times, t, "times"));
@@ -344,6 +351,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("prices", prices); }, [prices]);
   useEffect(() => { syncUp("times", times); }, [times]);
   useEffect(() => { syncUp("lista", lista); }, [lista]);
+  useEffect(() => { syncUp("ledger", ledger); }, [ledger]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -708,6 +716,22 @@ export default function PriceDesk() {
         client: selClient.name || "—", piezas: orderPiezas, total: totalDoc, ts: Date.now(),
       }, ...h].slice(0, 1000));
       if (docType === "factura") {
+        // cuenta corriente: cargo al cliente (total) + cargo por proveedor (costo×qty)
+        const ref = order.invoiceNo;
+        const auto = [{
+          id: uid(), ts: Date.now(), side: "client", party: selClient.name || "—",
+          type: "cargo", amount: totalDoc, concept: `Factura #${ref}`, date: order.date, ref,
+        }];
+        for (const { supplier, items } of remitoGroups) {
+          if (supplier === "(sin proveedor)") continue;
+          const cost = items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
+          if (cost > 0) auto.push({
+            id: uid(), ts: Date.now(), side: "supplier", party: supplier,
+            type: "cargo", amount: cost, concept: `Compra factura #${ref}`, date: order.date, ref,
+          });
+        }
+        // idempotente: reemplaza cargos automáticos previos de la misma factura
+        setLedger((lg) => [...auto, ...lg.filter((e) => !(e.ref === ref && e.type === "cargo"))]);
         setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
       }
     } catch (e) {
@@ -751,6 +775,48 @@ export default function PriceDesk() {
       setPdfBusy(false);
     }
   }
+
+  // ---- cuentas corrientes ----
+  // saldo = lo que el cliente nos debe (side client) / lo que le debemos al proveedor (side supplier).
+  // cargo suma, pago resta. La factura genera cargos automáticos; los pagos se registran a mano.
+  const ledgerView = useMemo(() => {
+    const byParty = {};
+    for (const e of ledger) {
+      if (e.side !== ledgerSide) continue;
+      const p = e.party || "—";
+      (byParty[p] ||= { party: p, saldo: 0, movs: [] });
+      byParty[p].saldo += (e.type === "pago" ? -1 : 1) * (Number(e.amount) || 0);
+      byParty[p].movs.push(e);
+    }
+    const parties = Object.values(byParty).sort((a, b) => b.saldo - a.saldo);
+    parties.forEach((p) => p.movs.sort((a, b) => (b.ts || 0) - (a.ts || 0)));
+    const total = parties.reduce((a, p) => a + p.saldo, 0);
+    return { parties, total };
+  }, [ledger, ledgerSide]);
+
+  function registerPay() {
+    const amt = parseFloat(String(payForm.amount).replace(/[^0-9.]/g, "")) || 0;
+    const party = payForm.party.trim();
+    if (!party) { alert("Elegí o escribí a quién corresponde el movimiento."); return; }
+    if (amt <= 0) { alert("Ingresá un monto mayor a 0."); return; }
+    setLedger((lg) => [{
+      id: uid(), ts: Date.now(), side: ledgerSide, party,
+      type: payForm.type, amount: amt, concept: payForm.concept.trim() || (payForm.type === "pago" ? "Pago" : "Ajuste"),
+      date: payForm.date || today(), ref: "",
+    }, ...lg]);
+    setPayForm({ party: "", amount: "", concept: "", date: today(), type: "pago" });
+  }
+  function deleteLedgerEntry(id) {
+    if (!confirm("¿Borrar este movimiento?")) return;
+    setLedger((lg) => lg.filter((e) => e.id !== id));
+  }
+  // partes conocidas para el datalist según el lado
+  const ledgerParties = useMemo(() => {
+    const set = new Set(ledger.filter((e) => e.side === ledgerSide).map((e) => e.party).filter(Boolean));
+    if (ledgerSide === "client") clients.forEach((c) => c.name && set.add(c.name));
+    else SUPPLIERS.forEach((s) => set.add(s));
+    return [...set].sort();
+  }, [ledger, ledgerSide, clients]);
 
   async function askDesk() {
     if (!apiKey.trim()) { setAnswerErr("Enter your Gemini API key first."); return; }
@@ -908,6 +974,7 @@ export default function PriceDesk() {
         <button onClick={() => setView("mesa")} style={{ ...s.viewTab, ...(view === "mesa" ? s.viewTabOn : {}) }}>📊 Mesa de precios</button>
         <button onClick={() => setView("ordenes")} style={{ ...s.viewTab, ...(view === "ordenes" ? s.viewTabOn : {}) }}>🧾 Órdenes · factura / remito</button>
         <button onClick={() => setView("clientes")} style={{ ...s.viewTab, ...(view === "clientes" ? s.viewTabOn : {}) }}>👤 Clientes</button>
+        <button onClick={() => setView("cuentas")} style={{ ...s.viewTab, ...(view === "cuentas" ? s.viewTabOn : {}) }}>💰 Cuentas</button>
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
       </div>
 
@@ -1389,6 +1456,80 @@ export default function PriceDesk() {
             </div>
           </div>
           <div style={s.selHint}>{clients.length} cliente(s) · {shippings.length} envío(s) guardados.</div>
+        </section>
+      )}
+
+      {view === "cuentas" && (
+        <section style={s.section}>
+          <div style={s.sectionTitle}>
+            CUENTAS CORRIENTES — {ledgerSide === "client" ? "lo que los clientes nos deben" : "lo que le debemos a cada proveedor"} · se generan solas con cada factura
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <button onClick={() => setLedgerSide("client")} style={{ ...s.planTab, ...(ledgerSide === "client" ? s.planTabOn : {}) }}>👤 Clientes (nos deben)</button>
+            <button onClick={() => setLedgerSide("supplier")} style={{ ...s.planTab, ...(ledgerSide === "supplier" ? s.planTabOn : {}) }}>🏭 Proveedores (les debemos)</button>
+            <span style={{ marginLeft: "auto", fontSize: 12, color: "#9aa4b2" }}>
+              Saldo total: <b style={{ color: ledgerView.total >= 0 ? "#fbbf24" : "#4ade80" }}>{money(ledgerView.total)}</b>
+            </span>
+          </div>
+
+          {/* registrar pago / ajuste manual */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14, padding: 10, background: "#11151f", border: "1px solid #1c2230", borderRadius: 6 }}>
+            <label style={s.ctrlLabel}><span style={s.ctrlText}>{ledgerSide === "client" ? "CLIENTE" : "PROVEEDOR"}</span>
+              <input list="ledger-parties" value={payForm.party} onChange={(e) => setPayForm((f) => ({ ...f, party: e.target.value }))} style={{ ...s.invInput, width: 170 }} placeholder="Nombre" />
+              <datalist id="ledger-parties">{ledgerParties.map((p) => <option key={p} value={p} />)}</datalist>
+            </label>
+            <label style={s.ctrlLabel}><span style={s.ctrlText}>TIPO</span>
+              <select value={payForm.type} onChange={(e) => setPayForm((f) => ({ ...f, type: e.target.value }))} style={{ ...s.invInput, width: 110 }}>
+                <option value="pago">Pago (−)</option>
+                <option value="cargo">Cargo (+)</option>
+              </select>
+            </label>
+            <label style={s.ctrlLabel}><span style={s.ctrlText}>MONTO</span>
+              <input value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} style={{ ...s.invInput, width: 90 }} inputMode="decimal" placeholder="0" />
+            </label>
+            <label style={s.ctrlLabel}><span style={s.ctrlText}>FECHA</span>
+              <input value={payForm.date} onChange={(e) => setPayForm((f) => ({ ...f, date: e.target.value }))} style={{ ...s.invInput, width: 110 }} />
+            </label>
+            <label style={s.ctrlLabel}><span style={s.ctrlText}>CONCEPTO</span>
+              <input value={payForm.concept} onChange={(e) => setPayForm((f) => ({ ...f, concept: e.target.value }))} style={{ ...s.invInput, width: 160 }} placeholder="opcional" />
+            </label>
+            <button onClick={registerPay} style={{ ...s.toolBtn, marginLeft: 0 }}>+ Registrar</button>
+          </div>
+
+          {ledgerView.parties.length === 0 ? (
+            <div style={s.askHint}>Todavía no hay movimientos. Generá una factura (Órdenes) o registrá un pago/cargo arriba.</div>
+          ) : (
+            ledgerView.parties.map((p) => (
+              <div key={p.party} style={{ marginBottom: 16, border: "1px solid #1c2230", borderRadius: 6, overflow: "hidden" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#13182333" }}>
+                  <b style={{ color: "#cfd6e4" }}>{p.party}</b>
+                  <span>Saldo: <b style={{ color: p.saldo > 0.005 ? "#fbbf24" : p.saldo < -0.005 ? "#4ade80" : "#6b7385" }}>{money(p.saldo)}</b></span>
+                </div>
+                <table style={s.invTable}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
+                      <th style={{ ...s.invTh, textAlign: "left" }}>Concepto</th>
+                      <th style={s.invTh}>Cargo</th>
+                      <th style={s.invTh}>Pago</th>
+                      <th style={s.invTh}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {p.movs.map((e) => (
+                      <tr key={e.id}>
+                        <td style={{ ...s.invTd, textAlign: "left" }}>{e.date}</td>
+                        <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{e.concept}</td>
+                        <td style={{ ...s.invTd, color: "#fbbf24" }}>{e.type !== "pago" ? money(e.amount) : ""}</td>
+                        <td style={{ ...s.invTd, color: "#4ade80" }}>{e.type === "pago" ? money(e.amount) : ""}</td>
+                        <td style={s.invTd}><span style={s.chipX} onClick={() => deleteLedgerEntry(e.id)}>×</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))
+          )}
         </section>
       )}
 
