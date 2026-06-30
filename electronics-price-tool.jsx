@@ -623,22 +623,44 @@ export default function PriceDesk() {
     const skus = catalog.filter((c) => selected[c.name]).map((c) => c.name);
     setOrder((p) => {
       const have = new Set(p.items.map((i) => i.sku));
-      const add = skus.filter((sk) => !have.has(sk)).map((sk) => ({ sku: sk, qty: 1, price: lista[sk] ?? aggBySku[sk]?.client ?? 0 }));
+      const add = skus.filter((sk) => !have.has(sk)).map((sk) => newOrderLine(sk));
       return { ...p, items: [...p.items, ...add] };
     });
   }
   function setOrderField(k, v) { setOrder((p) => ({ ...p, [k]: v })); }
+  // proveedor más barato (cualquier precio conocido) para sembrar la línea
+  function cheapestSupplier(sku) {
+    const row = prices[sku] || {};
+    let best = "", bv = Infinity;
+    for (const [sp, v] of Object.entries(row)) if (typeof v === "number" && v < bv) { bv = v; best = sp; }
+    return best;
+  }
+  // una línea de orden: qty, color, proveedor (de dónde se compra) + su costo, y price (lo que se factura al cliente)
+  function newOrderLine(sku) {
+    const sup = cheapestSupplier(sku);
+    return { sku, qty: 1, color: "", supplier: sup, cost: prices[sku]?.[sup] ?? 0, price: lista[sku] ?? aggBySku[sku]?.client ?? 0 };
+  }
   function addOrderItem(sku) {
     if (!catalogNames.includes(sku)) return;
     setOrder((p) => p.items.some((i) => i.sku === sku) ? p
-      : { ...p, items: [...p.items, { sku, qty: 1, price: lista[sku] ?? aggBySku[sku]?.client ?? 0 }] });
+      : { ...p, items: [...p.items, newOrderLine(sku)] });
     setOrderQuery("");
   }
+  const NUMERIC_ITEM = new Set(["qty", "price", "cost"]);
   function setItem(idx, k, v) {
     setOrder((p) => ({
       ...p,
       items: p.items.map((it, i) => i === idx
-        ? { ...it, [k]: k === "sku" ? v : (parseFloat(String(v).replace(/[^0-9.]/g, "")) || 0) }
+        ? { ...it, [k]: NUMERIC_ITEM.has(k) ? (parseFloat(String(v).replace(/[^0-9.]/g, "")) || 0) : v }
+        : it),
+    }));
+  }
+  // cambiar de proveedor: setea proveedor y trae su costo (el "precio alt")
+  function setItemSupplier(idx, supplier) {
+    setOrder((p) => ({
+      ...p,
+      items: p.items.map((it, i) => i === idx
+        ? { ...it, supplier, cost: prices[it.sku]?.[supplier] ?? it.cost ?? 0 }
         : it),
     }));
   }
@@ -652,6 +674,7 @@ export default function PriceDesk() {
   };
   const orderPiezas = order.items.reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const orderSubtotal = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.price) || 0), 0);
+  const orderCost = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
 
   // Generate the PDF only on click (not on every render) — avoids saturating the browser.
   async function downloadDoc() {
@@ -1225,27 +1248,42 @@ export default function PriceDesk() {
               <tr>
                 <th style={s.invTh}>Qty</th>
                 <th style={{ ...s.invTh, textAlign: "left" }}>Descripción</th>
+                <th style={s.invTh}>Color</th>
+                <th style={s.invTh}>Proveedor</th>
+                <th style={s.invTh} title="Costo del proveedor elegido × cantidad">Costo</th>
                 {docType === "factura" && <th style={s.invTh}>Precio</th>}
                 {docType === "factura" && <th style={s.invTh}>Line Total</th>}
                 <th style={s.invTh}></th>
               </tr>
             </thead>
             <tbody>
-              {order.items.map((it, idx) => (
+              {order.items.map((it, idx) => {
+                const sups = Object.keys(prices[it.sku] || {});
+                const supOpts = it.supplier && !sups.includes(it.supplier) ? [it.supplier, ...sups] : sups;
+                return (
                 <tr key={idx}>
-                  <td style={s.invTd}><input value={it.qty} onChange={(e) => setItem(idx, "qty", e.target.value)} style={{ ...s.cellInput, width: 50, border: "1px solid #232a3a" }} /></td>
+                  <td style={s.invTd}><input value={it.qty} onChange={(e) => setItem(idx, "qty", e.target.value)} style={{ ...s.cellInput, width: 44, border: "1px solid #232a3a" }} /></td>
                   <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{it.sku}</td>
+                  <td style={s.invTd}><input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} /></td>
+                  <td style={s.invTd}>
+                    <select value={it.supplier || ""} onChange={(e) => setItemSupplier(idx, e.target.value)} style={{ ...s.cellInput, width: 132, border: "1px solid #232a3a" }}>
+                      <option value="">—</option>
+                      {supOpts.map((sp) => <option key={sp} value={sp}>{sp}{typeof prices[it.sku]?.[sp] === "number" ? ` · $${Math.round(prices[it.sku][sp])}` : ""}</option>)}
+                    </select>
+                  </td>
+                  <td style={s.invTd}><input value={it.cost ?? 0} onChange={(e) => setItem(idx, "cost", e.target.value)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a", color: "#9aa4b2" }} /></td>
                   {docType === "factura" && <td style={s.invTd}><input value={it.price} onChange={(e) => setItem(idx, "price", e.target.value)} style={{ ...s.cellInput, width: 70, border: "1px solid #232a3a" }} /></td>}
                   {docType === "factura" && <td style={{ ...s.invTd, color: "#fbbf24" }}>{money((Number(it.qty) || 0) * (Number(it.price) || 0))}</td>}
                   <td style={s.invTd}><span style={s.chipX} onClick={() => removeItem(idx)}>×</span></td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}
 
         <div style={s.invFoot}>
-          <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b></>}</span>
+          <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b> · Costo: <b style={{ color: "#9aa4b2" }}>{money(orderCost)}</b> · Margen: <b style={{ color: "#4ade80" }}>{money(orderSubtotal - orderCost)}</b></>}</span>
           {order.items.length > 0
             ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
                 {pdfBusy ? "Generando…" : `⬇ Descargar ${docType} PDF`}

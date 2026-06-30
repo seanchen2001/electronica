@@ -144,7 +144,7 @@ export default function InvoiceDoc({ company, client, order, mode }) {
             {items.map((it, idx) => (
               <View style={s.row} key={idx}>
                 <Text style={s.cQty}>{it.qty}</Text>
-                <Text style={s.cDesc}>{it.sku}</Text>
+                <Text style={s.cDesc}>{it.sku}{it.color ? ` — ${it.color}` : ""}</Text>
                 {!remito && <Text style={s.cPrice}>{money(it.price)}</Text>}
                 {!remito && <Text style={s.cTotal}>{money((Number(it.qty) || 0) * (Number(it.price) || 0))}</Text>}
               </View>
