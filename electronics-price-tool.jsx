@@ -475,21 +475,18 @@ export default function PriceDesk() {
   }
   function resetToSeed() { loadSeed(true); }
 
-  // Bulk-fill Lista = Minimo + listaPct% for rows with a fresh min (mini reset).
+  // Bulk-fill Lista = Minimo + listaPct% para cada fila con precio conocido.
+  // Prefiere el mínimo fresco; si toda la fila está expirada, cae al último mínimo conocido
+  // (si no, después de cada lunes el botón no pegaba nada).
   function fillLista() {
     const pct = parseFloat(listaPct) || 0;
-    if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe las filas con precio fresco)`)) return;
+    if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe cada fila con precio cargado)`)) return;
     setLista((prev) => {
       const next = { ...prev };
       for (const { name } of catalog) {
-        const a = rowAggregates(
-          Object.fromEntries(
-            SUPPLIERS.map((sp) => [sp, prices[name]?.[sp]]).filter(
-              ([sp, v]) => typeof v === "number" && classifyFreshness(times[name]?.[sp], Date.now()) !== "expired"
-            )
-          ),
-          marginNum
-        );
+        const all = SUPPLIERS.map((sp) => [sp, prices[name]?.[sp]]).filter(([, v]) => typeof v === "number");
+        const fresh = all.filter(([sp]) => classifyFreshness(times[name]?.[sp], Date.now()) !== "expired");
+        const a = rowAggregates(Object.fromEntries(fresh.length ? fresh : all), marginNum);
         if (a.min != null) next[name] = Math.round(a.min * (1 + pct / 100));
       }
       return next;
