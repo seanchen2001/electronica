@@ -635,10 +635,20 @@ export default function PriceDesk() {
     for (const [sp, v] of Object.entries(row)) if (typeof v === "number" && v < bv) { bv = v; best = sp; }
     return best;
   }
-  // una línea de orden: qty, color, proveedor (de dónde se compra) + su costo, y price (lo que se factura al cliente)
+  // una línea de orden: qty, color, spec (EURO/LATIN), proveedor (de dónde se compra) + su costo, y price (lo que se factura al cliente)
+  function specForCat(cat) { return cat === "Motorola LATIN" ? "LATIN" : cat === "Motorola EURO" ? "EURO" : ""; }
   function newOrderLine(sku) {
     const sup = cheapestSupplier(sku);
-    return { sku, qty: 1, color: "", supplier: sup, cost: prices[sku]?.[sup] ?? 0, price: lista[sku] ?? aggBySku[sku]?.client ?? 0 };
+    const cat = catalog.find((c) => c.name === sku)?.cat || "";
+    return { sku, cat, qty: 1, color: "", spec: specForCat(cat), supplier: sup, cost: prices[sku]?.[sup] ?? 0, price: lista[sku] ?? aggBySku[sku]?.client ?? 0 };
+  }
+  // splitear una línea en varios colores: duplica la fila (qty 1, color en blanco para llenar)
+  function splitItem(idx) {
+    setOrder((p) => {
+      const items = [...p.items];
+      items.splice(idx + 1, 0, { ...p.items[idx], qty: 1, color: "" });
+      return { ...p, items };
+    });
   }
   function addOrderItem(sku) {
     if (!catalogNames.includes(sku)) return;
@@ -1249,6 +1259,7 @@ export default function PriceDesk() {
                 <th style={s.invTh}>Qty</th>
                 <th style={{ ...s.invTh, textAlign: "left" }}>Descripción</th>
                 <th style={s.invTh}>Color</th>
+                <th style={s.invTh}>Spec</th>
                 <th style={s.invTh}>Proveedor</th>
                 <th style={s.invTh} title="Costo del proveedor elegido × cantidad">Costo</th>
                 {docType === "factura" && <th style={s.invTh}>Precio</th>}
@@ -1264,7 +1275,11 @@ export default function PriceDesk() {
                 <tr key={idx}>
                   <td style={s.invTd}><input value={it.qty} onChange={(e) => setItem(idx, "qty", e.target.value)} style={{ ...s.cellInput, width: 44, border: "1px solid #232a3a" }} /></td>
                   <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{it.sku}</td>
-                  <td style={s.invTd}><input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} /></td>
+                  <td style={s.invTd}>
+                    <input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} />
+                    <span style={s.chipSplit} title="Splitear: duplica esta línea para otro color" onClick={() => splitItem(idx)}>+</span>
+                  </td>
+                  <td style={s.invTd}><input value={it.spec || ""} onChange={(e) => setItem(idx, "spec", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 60, border: "1px solid #232a3a" }} /></td>
                   <td style={s.invTd}>
                     <select value={it.supplier || ""} onChange={(e) => setItemSupplier(idx, e.target.value)} style={{ ...s.cellInput, width: 132, border: "1px solid #232a3a" }}>
                       <option value="">—</option>
@@ -1510,6 +1525,7 @@ const styles = {
   chip: { display: "inline-flex", alignItems: "center", gap: 6, background: "#11151f", border: "1px solid #232a3a", borderRadius: 14, padding: "3px 6px 3px 10px", fontSize: 11.5, color: "#cfd6e4" },
   chipQty: { width: 38, background: "#0b0e14", border: "1px solid #232a3a", color: "#cfd6e4", borderRadius: 3, textAlign: "right", fontFamily: "inherit", fontSize: 11, padding: "1px 4px", outline: "none" },
   chipX: { cursor: "pointer", color: "#8b94a7", fontSize: 14, lineHeight: 1, padding: "0 2px" },
+  chipSplit: { cursor: "pointer", color: "#6ea8fe", fontSize: 14, fontWeight: 700, lineHeight: 1, padding: "0 4px", marginLeft: 2 },
   planBar: { display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" },
   planTabs: { display: "flex", gap: 6 },
   planTab: { background: "#11151f", border: "1px solid #232a3a", color: "#9aa3b5", padding: "6px 12px", borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5 },

@@ -8,6 +8,14 @@ import { LOGO } from "./logo.js";
 
 const money = (n) =>
   "$" + (Number(n) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Descripción para la factura: "Samsung A07 4+64 DS - COLOR - SPEC".
+// El proveedor NUNCA va acá (es interno). Marca = Samsung para esa categoría;
+// los Motorola ya traen la marca en el nombre.
+function itemDesc(it) {
+  const brand = it.cat === "Samsung" ? "Samsung " : "";
+  return [brand + it.sku, it.color, it.spec].filter((x) => x && String(x).trim()).join(" - ");
+}
 const GRAY = "#f0f0f0";
 const BLACK = "#000";
 
@@ -144,7 +152,7 @@ export default function InvoiceDoc({ company, client, order, mode }) {
             {items.map((it, idx) => (
               <View style={s.row} key={idx}>
                 <Text style={s.cQty}>{it.qty}</Text>
-                <Text style={s.cDesc}>{it.sku}{it.color ? ` — ${it.color}` : ""}</Text>
+                <Text style={s.cDesc}>{itemDesc(it)}</Text>
                 {!remito && <Text style={s.cPrice}>{money(it.price)}</Text>}
                 {!remito && <Text style={s.cTotal}>{money((Number(it.qty) || 0) * (Number(it.price) || 0))}</Text>}
               </View>
