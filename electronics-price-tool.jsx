@@ -259,6 +259,7 @@ export default function PriceDesk() {
   });
   const [orderClientId, setOrderClientId] = useState(""); // selección en Órdenes
   const [orderShipId, setOrderShipId] = useState("");
+  const [editingTs, setEditingTs] = useState(null); // ts del registro del Historial que se está editando
 
   // móvil → layout compacto / AI-focus
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches);
@@ -750,18 +751,24 @@ export default function PriceDesk() {
         if (supplier === "(sin proveedor)") continue;
         supplierCosts[supplier] = items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
       }
-      setInvoiceHistory((h) => [{
+      const rec = {
         no: order.invoiceNo, date: order.date, type: docType,
-        client: selClient.name || "—", clientId: orderClientId,
+        client: selClient.name || "—", clientId: orderClientId, shipId: orderShipId,
         piezas: orderPiezas, subtotal: orderSubtotal, shipping: Number(order.shippingCost) || 0,
         total: totalDoc, cost: orderCost, margin: orderSubtotal - orderCost,
         supplierCosts, items: JSON.parse(JSON.stringify(order.items)),
-        // datos para regenerar cualquier PDF desde el Historial
-        order: JSON.parse(JSON.stringify(order)), clientPdf: clientForPdf, ts: Date.now(),
-      }, ...h].slice(0, 1000));
-      if (docType === "factura") {
-        // las cuentas (cargo al cliente + compra a cada proveedor) se DERIVAN del historial.
-        setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
+        // datos para regenerar / editar cualquier documento desde el Historial
+        order: JSON.parse(JSON.stringify(order)), clientPdf: clientForPdf,
+      };
+      if (editingTs) {
+        // editando una factura existente: reemplaza el registro (mismo #) y recalcula cuentas/PnL
+        setInvoiceHistory((h) => h.map((x) => (x.ts === editingTs ? { ...rec, ts: editingTs } : x)));
+        setEditingTs(null);
+      } else {
+        setInvoiceHistory((h) => [{ ...rec, ts: Date.now() }, ...h].slice(0, 1000));
+        if (docType === "factura") {
+          setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
+        }
       }
     } catch (e) {
       alert("Error generando el PDF: " + (e?.message || e));
@@ -839,6 +846,22 @@ export default function PriceDesk() {
     } finally {
       setPdfBusy(false);
     }
+  }
+
+  // Cargar una factura del Historial en el editor de Órdenes para modificarla.
+  function loadInvoiceForEdit(rec) {
+    if (!rec.order) { alert("Esta factura es vieja y no tiene los datos completos para editar. Podés rehacerla como nueva."); return; }
+    setOrder(JSON.parse(JSON.stringify(rec.order)));
+    setOrderClientId(rec.clientId || "");
+    setOrderShipId(rec.shipId || "");
+    setDocType(rec.type === "remito" ? "remito" : "factura");
+    setEditingTs(rec.ts);
+    setView("ordenes");
+  }
+  // Volver a una orden nueva (limpia el modo edición).
+  function resetOrder() {
+    setOrder({ items: [], invoiceNo: String(nextInvoiceNo(invoiceHistory)), date: today(), payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "" });
+    setOrderClientId(""); setOrderShipId(""); setEditingTs(null); setDocType("factura");
   }
 
   // ---- cuentas corrientes ----
@@ -1493,6 +1516,12 @@ export default function PriceDesk() {
       {view === "ordenes" && (
       <section style={s.section}>
         <div style={s.sectionTitle}>ÓRDENES — Factura / Remito</div>
+        {editingTs && (
+          <div style={s.editBanner}>
+            ✏️ Editando la factura <b>#{order.invoiceNo}</b> — al guardar se actualiza esa misma (recalcula cuentas y PnL).
+            <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 8 }}>Cancelar / Nueva orden</button>
+          </div>
+        )}
         <div style={s.planTabs}>
           <button onClick={() => setDocType("factura")} style={{ ...s.planTab, ...(docType === "factura" ? s.planTabOn : {}) }}>Factura (con precios)</button>
           <button onClick={() => setDocType("remito")} style={{ ...s.planTab, ...(docType === "remito" ? s.planTabOn : {}) }}>Remito x proveedor (sin precios)</button>
@@ -1610,16 +1639,19 @@ export default function PriceDesk() {
 
         <div style={s.invFoot}>
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b> · Costo: <b style={{ color: "#9aa4b2" }}>{money(orderCost)}</b> · Margen: <b style={{ color: "#4ade80" }}>{money(orderSubtotal - orderCost)}</b></>}</span>
-          {order.items.length > 0
-            ? (docType === "factura"
-                ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
-                    {pdfBusy ? "Generando…" : "⬇ Descargar Factura PDF"}
-                  </button>
-                : <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un archivo por proveedor (sin precios ni cliente, con dirección de entrega)"
-                    style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
-                    {pdfBusy ? "Generando…" : `⬇ Descargar Remitos por proveedor (${remitoGroups.length})`}
-                  </button>)
-            : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
+          <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+            {(editingTs || order.items.length > 0) && <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Nueva orden</button>}
+            {order.items.length > 0
+              ? (docType === "factura"
+                  ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                      {pdfBusy ? "Generando…" : editingTs ? `💾 Guardar cambios (factura #${order.invoiceNo})` : "⬇ Descargar Factura PDF"}
+                    </button>
+                  : <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un archivo por proveedor (sin precios ni cliente, con dirección de entrega)"
+                      style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                      {pdfBusy ? "Generando…" : `⬇ Descargar Remitos por proveedor (${remitoGroups.length})`}
+                    </button>)
+              : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
+          </span>
         </div>
       </section>
 
@@ -1874,8 +1906,8 @@ export default function PriceDesk() {
                       <td style={{ ...s.invTd, color: "#9aa4b2" }}>{h.cost != null ? money(h.cost) : "—"}</td>
                       <td style={{ ...s.invTd, color: (h.margin || 0) >= 0 ? "#4ade80" : "#f87171" }}>{h.margin != null ? money(h.margin) : "—"}</td>
                       <td style={{ ...s.invTd, textAlign: "left", whiteSpace: "nowrap" }}>
+                        <button onClick={() => loadInvoiceForEdit(h)} style={{ ...s.miniBtn, borderColor: "#3a5", color: "#8ee0a8" }} title="Editar esta factura (items, colores, cantidades, cliente, envío)">✏️ Editar</button>{" "}
                         <button onClick={() => downloadFromHistory(h, "factura")} disabled={pdfBusy} style={s.miniBtn} title="Factura (con precios)">Factura</button>{" "}
-                        <button onClick={() => downloadFromHistory(h, "remito")} disabled={pdfBusy} style={s.miniBtn} title="Remito al cliente (sin precios)">Remito</button>{" "}
                         <button onClick={() => downloadFromHistory(h, "remitos")} disabled={pdfBusy} style={s.miniBtn} title="Remitos por proveedor (sin precios)">Rem. x prov.</button>
                       </td>
                       <td style={s.invTd}><span style={s.chipX} onClick={() => deleteInvoice(h.ts, h.no)}>×</span></td>
@@ -2052,6 +2084,7 @@ const styles = {
   invTh: { background: "#11151f", color: "#8b94a7", fontSize: 10, fontWeight: 600, textAlign: "right", padding: "6px 8px", borderBottom: "1px solid #1c2230" },
   invTd: { padding: "3px 8px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums" },
   invFoot: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, flexWrap: "wrap", gap: 10, fontSize: 12, color: "#cfd6e4" },
+  editBanner: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, background: "#1a2410", border: "1px solid #3a5a1d", color: "#cfe6b8", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 12 },
   pdfBtn: { background: "#16a34a", color: "#fff", padding: "8px 18px", borderRadius: 4, fontSize: 12.5, fontWeight: 600, textDecoration: "none", fontFamily: "inherit" },
   cotInputRow: { display: "flex", gap: 8, alignItems: "center", marginBottom: 10 },
   cotSearch: { flex: 1, maxWidth: 360, background: "#11151f", border: "1px solid #232a3a", color: "#e8ecf3", padding: "8px 10px", borderRadius: 4, fontFamily: "inherit", fontSize: 13, outline: "none" },
