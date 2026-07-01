@@ -713,10 +713,10 @@ export default function PriceDesk() {
   const selClient = clients.find((c) => c.id === orderClientId) || blankClient();
   const selShip = shippings.find((sh) => sh.id === orderShipId) || blankShip();
   const clientAddrLines = (selClient.address || "").split("\n").map((x) => x.trim()).filter(Boolean);
-  // dirección de envío para el remito: el Envío seleccionado y, si está vacío, la dirección del cliente
+  // dirección de entrega para el remito: el campo explícito de la orden, luego el Envío, luego el cliente
   const shipInfo = {
     notify: selShip.notify,
-    direccion: selShip.direccion || clientAddrLines.join(", "),
+    direccion: order.deliveryAddr || selShip.direccion || clientAddrLines.join(", "),
     telefono: selShip.telefono || selClient.phone,
     contacto: selShip.contacto,
   };
@@ -797,16 +797,16 @@ export default function PriceDesk() {
 
   // Remitos por proveedor: un archivo por proveedor, sin precios ni cliente, con la dirección
   // de entrega (depósito). Nombre: Remito_<Factura#>_<proveedor>.pdf
-  async function emitSupplierRemitos(ord, deliveryAddr, extra = {}) {
+  // Remitos por proveedor: un archivo por proveedor (solo sus items). Adentro se ve igual que la
+  // factura pero sin precios y SIN datos del proveedor. El código va solo en el nombre del archivo.
+  async function emitSupplierRemitos(ord, clientPdf) {
     const by = {};
     for (const it of ord.items || []) { const k = it.supplier || "sin_proveedor"; (by[k] ||= []).push(it); }
     const entries = Object.entries(by);
     if (!entries.length) { alert("La orden no tiene items."); return; }
     for (const [supplier, items] of entries) {
       const code = supplierCode(supplier);
-      // el remito usa SIEMPRE el código del proveedor (adentro y en el nombre del archivo)
-      const cli = { name: code, addressLines: [], direccion: deliveryAddr || "", notify: extra.notify, telefono: extra.telefono, contacto: extra.contacto };
-      const doc = <InvoiceDoc company={COMPANY} client={cli} order={{ ...ord, items }} mode="remito" />;
+      const doc = <InvoiceDoc company={COMPANY} client={clientPdf} order={{ ...ord, items }} mode="remito" />;
       await saveBlob(await pdf(doc).toBlob(), `Remito_${ord.invoiceNo}_${code}.pdf`);
       if (entries.length > 1) await new Promise((r) => setTimeout(r, 450)); // separar descargas
     }
@@ -816,7 +816,7 @@ export default function PriceDesk() {
     if (!order.items.length) return;
     setPdfBusy(true);
     try {
-      await emitSupplierRemitos(order, order.deliveryAddr || shipInfo.direccion, shipInfo);
+      await emitSupplierRemitos(order, clientForPdf);
     } catch (e) {
       alert("Error generando los remitos: " + (e?.message || e));
     } finally {
@@ -837,7 +837,7 @@ export default function PriceDesk() {
         cli = { name: rec.client, addressLines: lines, direccion: lines.join(", "), telefono: c?.phone, notify: "", contacto: "" };
       }
       if (mode === "remitos") {
-        await emitSupplierRemitos(ord, ord.deliveryAddr || cli.direccion, cli);
+        await emitSupplierRemitos(ord, cli);
       } else {
         await saveBlob(await pdf(<InvoiceDoc company={COMPANY} client={cli} order={ord} mode={mode} />).toBlob(), `${mode}-${rec.no}.pdf`);
       }
