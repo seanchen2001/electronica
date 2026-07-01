@@ -64,6 +64,7 @@ const SHIPS_KEY = "desk-ships-v1";
 const HIST_KEY = "desk-invoices-v1";
 const CAT_KEY = "desk-extra-catalog-v1";
 const LEDGER_KEY = "desk-ledger-v1";
+const SUPP_KEY = "desk-suppliers-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -206,6 +207,9 @@ export default function PriceDesk() {
   const [hideEmpty, setHideEmpty] = useState(false); // ocultar modelos sin precio esta semana
   // catálogo dinámico: base (fijo) + modelos agregados por el usuario
   const [extraCatalog, setExtraCatalog] = useState(() => load(CAT_KEY, []));
+  // proveedores editables (sembrados de la constante, se pueden agregar/sacar)
+  const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
+  const [newSupplier, setNewSupplier] = useState("");
   const catalog = useMemo(() => [...CATALOG, ...extraCatalog], [extraCatalog]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
@@ -277,6 +281,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
   useEffect(() => { try { localStorage.setItem(CAT_KEY, JSON.stringify(extraCatalog)); } catch {} }, [extraCatalog]);
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
+  useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -319,6 +324,7 @@ export default function PriceDesk() {
         setSnapshots((sn) => resolve(d.snapshots, sn, "snapshots"));
         setExtraCatalog((c) => resolve(d.catalog, c, "catalog"));
         setLedger((lg) => resolve(d.ledger, lg, "ledger"));
+        setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
         if (!skipObjects) {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
           setTimes((t) => resolveObj(d.times, t, "times"));
@@ -351,6 +357,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("times", times); }, [times]);
   useEffect(() => { syncUp("lista", lista); }, [lista]);
   useEffect(() => { syncUp("ledger", ledger); }, [ledger]);
+  useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -498,7 +505,7 @@ export default function PriceDesk() {
       const fr = {};
       const freshPrices = {};
       const allVals = [];
-      for (const sp of SUPPLIERS) {
+      for (const sp of supplierList) {
         const v = prices[name]?.[sp];
         if (typeof v !== "number") continue;
         allVals.push(v);
@@ -509,9 +516,14 @@ export default function PriceDesk() {
       fresh[name] = fr;
       agg[name] = rowAggregates(freshPrices, marginNum);
       agg[name].minAny = allVals.length ? Math.min(...allVals) : null; // incluye expirados (fallback)
+      // si toda la fila está expirada, el precio Client (+%) igual se muestra en vivo desde el último mínimo conocido
+      if (agg[name].client == null && agg[name].minAny != null) {
+        agg[name].client = Math.round(agg[name].minAny * (1 + marginNum / 100));
+        agg[name].clientStale = true;
+      }
     }
     return { aggBySku: agg, freshBySku: fresh };
-  }, [prices, times, marginNum, now, catalog]);
+  }, [prices, times, marginNum, now, catalog, supplierList]);
 
   // Precio de Lista (venta) de una fila: override manual si lo hay; si no, Mín + MARGIN% en vivo.
   // Prefiere el mínimo fresco; si está todo expirado, cae al último mínimo conocido.
@@ -615,6 +627,17 @@ export default function PriceDesk() {
     if (!shipForm.id) return;
     setShippings((prev) => prev.filter((x) => x.id !== shipForm.id));
     setShipForm(blankShip());
+  }
+  function addSupplier() {
+    const name = newSupplier.trim();
+    if (!name) return;
+    setSupplierList((l) => (l.includes(name) ? l : [...l, name]));
+    setNewSupplier("");
+  }
+  function removeSupplier(name) {
+    if (!confirm(`¿Sacar el proveedor "${name}"? Sus precios quedan guardados pero deja de mostrarse la columna.`)) return;
+    setSupplierList((l) => l.filter((s) => s !== name));
+    setParseSupplier((p) => (p === name ? "" : p));
   }
   function importMarked() {
     const skus = catalog.filter((c) => selected[c.name]).map((c) => c.name);
@@ -817,9 +840,9 @@ export default function PriceDesk() {
   const ledgerParties = useMemo(() => {
     const set = new Set(ledger.filter((e) => e.side === ledgerSide).map((e) => e.party).filter(Boolean));
     if (ledgerSide === "client") clients.forEach((c) => c.name && set.add(c.name));
-    else SUPPLIERS.forEach((s) => set.add(s));
+    else supplierList.forEach((s) => set.add(s));
     return [...set].sort();
-  }, [ledger, ledgerSide, clients]);
+  }, [ledger, ledgerSide, clients, supplierList]);
 
   // PnL / Margen — agregado desde el historial (solo facturas = ventas)
   const pnlView = useMemo(() => {
@@ -971,7 +994,7 @@ export default function PriceDesk() {
       <header style={s.header}>
         <div>
           <div style={s.title}>PRICE DESK</div>
-          {!isMobile && <div style={s.subtitle}>{catalog.length} SKUs · {SUPPLIERS.length} suppliers · supplier comparison · adjustable margin</div>}
+          {!isMobile && <div style={s.subtitle}>{catalog.length} SKUs · {supplierList.length} suppliers · supplier comparison · adjustable margin</div>}
         </div>
         <div style={s.controls}>
           <div style={s.mondayBadge}>
@@ -1036,7 +1059,7 @@ export default function PriceDesk() {
         <div style={s.sectionTitle}>PASTE &amp; PARSE — fill a supplier column from a messy quote</div>
         <div style={s.parseRow}>
           <select value={parseSupplier} onChange={(e) => setParseSupplier(e.target.value)} style={s.select}>
-            {SUPPLIERS.map((sp) => <option key={sp} value={sp}>{sp}</option>)}
+            {supplierList.map((sp) => <option key={sp} value={sp}>{sp}</option>)}
           </select>
           <textarea value={rawText} onChange={(e) => setRawText(e.target.value)} rows={2}
             placeholder='e.g. "S26 ultra 512gb 1020 · A07 4+128 94 · Negro Motorola G06 100"'
@@ -1107,7 +1130,7 @@ export default function PriceDesk() {
             <tbody>
               {(() => { let lc = null; return visibleCatalog.map(({ name, cat }) => {
                 const agg = aggBySku[name];
-                const pmv = prevSnap ? SUPPLIERS.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+                const pmv = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
                 const pMin = pmv.length ? Math.min(...pmv) : null;
                 const mt = (agg.min != null && pMin != null && pMin !== agg.min) ? { up: agg.min > pMin, prev: pMin, diff: agg.min - pMin } : null;
                 const header = cat !== lc ? ((lc = cat), (
@@ -1135,7 +1158,7 @@ export default function PriceDesk() {
             <thead>
               <tr>
                 <th style={{ ...s.th, ...s.thSku }}>SKU</th>
-                {SUPPLIERS.map((sp) => <th key={sp} style={s.th}>{sp}</th>)}
+                {supplierList.map((sp) => <th key={sp} style={s.th}>{sp}</th>)}
                 <th style={s.th}>Minimo</th>
                 <th style={s.th}>Medio</th>
                 <th style={s.th}>Lista</th>
@@ -1147,13 +1170,13 @@ export default function PriceDesk() {
                 const agg = aggBySku[name];
                 const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
                 const delta = spread ? agg.med - agg.min : 0;
-                const prevMinVals = prevSnap ? SUPPLIERS.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+                const prevMinVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
                 const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
                 const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
                 const header =
                   cat !== lastCat ? ((lastCat = cat), (
                     <tr key={"cat-" + cat}>
-                      <td colSpan={SUPPLIERS.length + 5} style={s.catRow}>{cat}</td>
+                      <td colSpan={supplierList.length + 5} style={s.catRow}>{cat}</td>
                     </tr>
                   )) : null;
                 return (
@@ -1166,7 +1189,7 @@ export default function PriceDesk() {
                           <span>{name}</span>
                         </label>
                       </td>
-                      {SUPPLIERS.map((sp) => {
+                      {supplierList.map((sp) => {
                         const v = prices[name]?.[sp];
                         const has = typeof v === "number";
                         const state = freshBySku[name]?.[sp]; // recent | updated | expired | undefined
@@ -1472,8 +1495,27 @@ export default function PriceDesk() {
                 {shipForm.id && <button onClick={deleteShip} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
               </div>
             </div>
+            <div style={s.invCol}>
+              <div style={s.invColHead}>PROVEEDORES</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input placeholder="Nuevo proveedor" value={newSupplier}
+                  onChange={(e) => setNewSupplier(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") addSupplier(); }}
+                  style={{ ...s.invInput, flex: 1 }} />
+                <button onClick={addSupplier} style={s.toolBtn}>+ Agregar</button>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                {supplierList.map((sp) => (
+                  <div key={sp} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#11151f", border: "1px solid #1c2230", borderRadius: 4, padding: "4px 8px" }}>
+                    <span style={{ color: "#cfd6e4" }}>{sp}</span>
+                    <span style={s.chipX} onClick={() => removeSupplier(sp)}>×</span>
+                  </div>
+                ))}
+                {supplierList.length === 0 && <span style={s.askHint}>Sin proveedores. Agregá al menos uno.</span>}
+              </div>
+            </div>
           </div>
-          <div style={s.selHint}>{clients.length} cliente(s) · {shippings.length} envío(s) guardados.</div>
+          <div style={s.selHint}>{clients.length} cliente(s) · {shippings.length} envío(s) · {supplierList.length} proveedor(es) guardados.</div>
         </section>
       )}
 
