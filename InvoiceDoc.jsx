@@ -90,7 +90,7 @@ function InvoicePage({ company, client, order, mode }) {
   const hasShip = client.notify || client.direccion || client.telefono || client.contacto;
   const meta = remito
     ? [
-        ["Proveedor:", client.name],
+        ["Proveedor:", client.code ? `${client.name} (${client.code})` : client.name],
         ["Remito Fact. #:", order.invoiceNo],
         ["Date:", order.date],
         ["FOB:", order.fob],

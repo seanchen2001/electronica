@@ -72,6 +72,12 @@ function nextInvoiceNo(hist) {
 }
 const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+// códigos cortos de proveedor para el nombre del archivo del remito
+const SUPPLIER_CODES = { planet: "PL", mirgor: "Mir", bax: "Bax", baxcell: "Bax", vitel: "Vit", sh: "SH" };
+function supplierCode(name) {
+  const key = String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return SUPPLIER_CODES[key] || String(name || "").replace(/[^\w-]+/g, "_") || "prov";
+}
 
 function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
 function today() { return fmtDMY(Date.now()); }
@@ -790,10 +796,10 @@ export default function PriceDesk() {
     const entries = Object.entries(by);
     if (!entries.length) { alert("La orden no tiene items."); return; }
     for (const [supplier, items] of entries) {
-      const cli = { name: supplier, addressLines: [], direccion: deliveryAddr || "", notify: extra.notify, telefono: extra.telefono, contacto: extra.contacto };
+      const code = supplierCode(supplier);
+      const cli = { name: supplier, code, addressLines: [], direccion: deliveryAddr || "", notify: extra.notify, telefono: extra.telefono, contacto: extra.contacto };
       const doc = <InvoiceDoc company={COMPANY} client={cli} order={{ ...ord, items }} mode="remito" />;
-      const safe = String(supplier).replace(/[^\w-]+/g, "_");
-      await saveBlob(await pdf(doc).toBlob(), `Remito_${ord.invoiceNo}_${safe}.pdf`);
+      await saveBlob(await pdf(doc).toBlob(), `Remito_${ord.invoiceNo}_${code}.pdf`);
       if (entries.length > 1) await new Promise((r) => setTimeout(r, 450)); // separar descargas
     }
   }
