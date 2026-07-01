@@ -82,6 +82,12 @@ function supplierCode(name) {
 
 function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
 function today() { return fmtDMY(Date.now()); }
+function parseDMY(s, fallbackTs) {
+  const m = String(s || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return new Date(y, +m[2] - 1, +m[1]); }
+  return new Date(fallbackTs || 0);
+}
+const MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 
 // Un snapshot por semana (lunes del ciclo). Guardar de nuevo en la misma semana
 // pisa el anterior → queda "el último precio de la semana". Mantiene ~2 años.
@@ -878,28 +884,27 @@ export default function PriceDesk() {
 
   const accounts = useMemo(() => {
     const byParty = {};
-    const add = (party, m) => { const p = canon(party); (byParty[p] ||= []).push(m); };
-    // cargos derivados de las facturas
+    // cargo = aumenta lo adeudado (venta al cliente / compra al proveedor); pago = lo reduce
+    const add = (party, m) => { const p = canon(party); (byParty[p] ||= []).push({ ...m, when: parseDMY(m.date, m.ts).getTime() }); };
     for (const f of invoiceHistory) {
       if (f.type !== "factura") continue;
       if (ledgerSide === "client") {
-        add(f.client || "—", { key: `f-${f.no}`, ts: f.ts, date: f.date, concept: `Factura #${f.no}`, ref: f.no, debito: Number(f.total) || 0, credito: 0, derived: true });
+        add(f.client || "—", { key: `f-${f.no}`, ts: f.ts, date: f.date, concept: `Factura #${f.no}`, ref: f.no, cargo: Number(f.total) || 0, pago: 0, derived: true });
       } else {
-        for (const [sp, c] of Object.entries(f.supplierCosts || {})) add(sp, { key: `f-${f.no}-${sp}`, ts: f.ts, date: f.date, concept: `Compra fact. #${f.no}`, ref: f.no, debito: Number(c) || 0, credito: 0, derived: true });
+        for (const [sp, c] of Object.entries(f.supplierCosts || {})) add(sp, { key: `f-${f.no}-${sp}`, ts: f.ts, date: f.date, concept: `Compra fact. #${f.no}`, ref: f.no, cargo: Number(c) || 0, pago: 0, derived: true });
       }
     }
-    // movimientos manuales (pagos / gastos); ignora cargos automáticos viejos
     for (const e of ledger) {
       if (e.side !== ledgerSide) continue;
-      if (e.type === "cargo" && e.ref) continue;
+      if (e.type === "cargo" && e.ref) continue; // cargos automáticos viejos → se derivan
       const pago = e.type === "pago";
-      add(e.party, { key: e.id, id: e.id, ts: e.ts, date: e.date, concept: e.concept, ref: e.ref || "", debito: pago ? 0 : (Number(e.amount) || 0), credito: pago ? (Number(e.amount) || 0) : 0, derived: false });
+      add(e.party, { key: e.id, id: e.id, ts: e.ts, date: e.date, concept: e.concept, ref: e.ref || "", cargo: pago ? 0 : (Number(e.amount) || 0), pago: pago ? (Number(e.amount) || 0) : 0, derived: false });
     }
     const out = {};
     for (const [party, movs] of Object.entries(byParty)) {
-      movs.sort((a, b) => (a.ts || 0) - (b.ts || 0)); // cronológico para el saldo corriente
+      movs.sort((a, b) => (a.when - b.when) || (a.ts || 0) - (b.ts || 0)); // por fecha para el saldo corriente
       let saldo = 0;
-      const rows = movs.map((m) => { saldo += (m.debito || 0) - (m.credito || 0); return { ...m, saldo }; });
+      const rows = movs.map((m) => { saldo += (m.cargo || 0) - (m.pago || 0); return { ...m, saldo }; });
       out[party] = { party, rows, saldo };
     }
     return out;
@@ -1777,32 +1782,48 @@ export default function PriceDesk() {
                     <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
                     <th style={{ ...s.invTh, textAlign: "left" }}>Concepto</th>
                     <th style={{ ...s.invTh, textAlign: "left" }}>Ref</th>
-                    <th style={s.invTh}>Débito</th>
-                    <th style={s.invTh}>Crédito</th>
+                    <th style={s.invTh} title={ledgerSide === "client" ? "Venta (les damos crédito)" : "Pago que hacemos"}>Débito</th>
+                    <th style={s.invTh} title={ledgerSide === "client" ? "Pago que recibimos" : "Compra (nos dan crédito)"}>Crédito</th>
                     <th style={s.invTh}>Saldo</th>
                     <th style={s.invTh}></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {currentAccount.rows.map((m) => (
-                    <tr key={m.key}>
-                      <td style={{ ...s.invTd, textAlign: "left" }}>{m.date}</td>
-                      <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{m.concept}</td>
-                      <td style={{ ...s.invTd, textAlign: "left", color: "#6fa8e6" }}>{m.ref ? `#${m.ref}` : ""}</td>
-                      <td style={{ ...s.invTd, color: "#fbbf24" }}>{m.debito ? money(m.debito) : ""}</td>
-                      <td style={{ ...s.invTd, color: "#4ade80" }}>{m.credito ? money(m.credito) : ""}</td>
-                      <td style={{ ...s.invTd, background: "#0f1a12", color: m.saldo < -0.005 ? "#f87171" : "#cfe6b8", fontWeight: 600 }}>{money(m.saldo)}</td>
-                      <td style={s.invTd}>{m.derived ? <span style={{ color: "#3a4255", fontSize: 10 }} title="Derivado de la factura — se edita/borra desde el Historial">🔒</span> : <span style={s.chipX} onClick={() => deleteLedgerEntry(m.id)}>×</span>}</td>
-                    </tr>
-                  ))}
+                  {(() => {
+                    let lastMonth = null;
+                    return currentAccount.rows.map((m) => {
+                      const d = parseDMY(m.date, m.ts);
+                      const mk = d.getFullYear() * 12 + d.getMonth();
+                      // en cliente: Débito=venta(cargo), Crédito=pago. En proveedor: Débito=pago, Crédito=compra(cargo).
+                      const debCol = ledgerSide === "client" ? m.cargo : m.pago;
+                      const credCol = ledgerSide === "client" ? m.pago : m.cargo;
+                      const header = mk !== lastMonth ? ((lastMonth = mk), (
+                        <tr key={"mh-" + mk}><td colSpan={7} style={s.acctMonth}>{MONTHS_ES[d.getMonth()]} {d.getFullYear()}</td></tr>
+                      )) : null;
+                      return (
+                        <React.Fragment key={m.key}>
+                          {header}
+                          <tr>
+                            <td style={{ ...s.invTd, textAlign: "left" }}>{m.date}</td>
+                            <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{m.concept}</td>
+                            <td style={{ ...s.invTd, textAlign: "left", color: "#6fa8e6" }}>{m.ref ? `#${m.ref}` : ""}</td>
+                            <td style={{ ...s.invTd, color: "#fbbf24" }}>{debCol ? money(debCol) : ""}</td>
+                            <td style={{ ...s.invTd, color: "#4ade80" }}>{credCol ? money(credCol) : ""}</td>
+                            <td style={{ ...s.invTd, background: "#0f1a12", color: m.saldo < -0.005 ? "#f87171" : "#cfe6b8", fontWeight: 600 }}>{money(m.saldo)}</td>
+                            <td style={s.invTd}>{m.derived ? <span style={{ color: "#3a4255", fontSize: 10 }} title="Derivado de la factura — se edita/borra desde el Historial">🔒</span> : <span style={s.chipX} onClick={() => deleteLedgerEntry(m.id)}>×</span>}</td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
               {/* registrar pago / gasto en esta cuenta */}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", padding: 10, borderTop: "1px solid #1c2230", background: "#0f131c" }}>
                 <label style={s.ctrlLabel}><span style={s.ctrlText}>TIPO</span>
                   <select value={payForm.type} onChange={(e) => setPayForm((f) => ({ ...f, type: e.target.value }))} style={{ ...s.invInput, width: 140 }}>
-                    <option value="pago">Pago (Crédito −)</option>
-                    <option value="gasto">Gasto envío (Débito +)</option>
+                    <option value="pago">Pago (baja el saldo)</option>
+                    <option value="gasto">Gasto envío (sube el saldo)</option>
                   </select>
                 </label>
                 <label style={s.ctrlLabel}><span style={s.ctrlText}>MONTO</span>
@@ -2117,6 +2138,7 @@ const styles = {
   acctTabs: { display: "flex", gap: 6, flexWrap: "wrap", padding: 8, background: "#0f131c", border: "1px solid #1c2230", borderRadius: 6 },
   acctTab: { display: "inline-flex", gap: 6, alignItems: "center", background: "#171c28", border: "1px solid #232a3a", color: "#aeb6c5", borderRadius: 5, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 12 },
   acctTabOn: { background: "#1d2740", borderColor: "#3a5b8f", color: "#e8ecf3" },
+  acctMonth: { background: "#1a2233", color: "#8fb0dd", fontWeight: 700, fontSize: 11, letterSpacing: 1, padding: "4px 10px", textTransform: "uppercase" },
   pdfBtn: { background: "#16a34a", color: "#fff", padding: "8px 18px", borderRadius: 4, fontSize: 12.5, fontWeight: 600, textDecoration: "none", fontFamily: "inherit" },
   cotInputRow: { display: "flex", gap: 8, alignItems: "center", marginBottom: 10 },
   cotSearch: { flex: 1, maxWidth: 360, background: "#11151f", border: "1px solid #232a3a", color: "#e8ecf3", padding: "8px 10px", borderRadius: 4, fontFamily: "inherit", fontSize: 13, outline: "none" },
