@@ -65,6 +65,7 @@ const HIST_KEY = "desk-invoices-v1";
 const CAT_KEY = "desk-extra-catalog-v1";
 const LEDGER_KEY = "desk-ledger-v1";
 const SUPP_KEY = "desk-suppliers-v1";
+const ALIASES_KEY = "desk-aliases-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -247,9 +248,12 @@ export default function PriceDesk() {
   const [shippings, setShippings] = useState(() => load(SHIPS_KEY, []));
   const [shipForm, setShipForm] = useState(blankShip());
   const [invoiceHistory, setInvoiceHistory] = useState(() => load(HIST_KEY, []));
-  const [ledger, setLedger] = useState(() => load(LEDGER_KEY, [])); // cuentas corrientes (movimientos)
+  const [ledger, setLedger] = useState(() => load(LEDGER_KEY, [])); // cuentas corrientes (movimientos manuales)
+  const [aliases, setAliases] = useState(() => load(ALIASES_KEY, {})); // fusionar cuentas: { nombre → cuenta canónica }
   const [ledgerSide, setLedgerSide] = useState("client"); // "client" | "supplier"
-  const [payForm, setPayForm] = useState({ party: "", amount: "", concept: "", date: today(), type: "pago" });
+  const [ledgerAccount, setLedgerAccount] = useState(""); // cuenta seleccionada (nombre canónico)
+  const [mergeFrom, setMergeFrom] = useState(""); const [mergeTo, setMergeTo] = useState("");
+  const [payForm, setPayForm] = useState({ amount: "", concept: "", date: today(), type: "pago" });
   const [docType, setDocType] = useState("factura"); // "factura" | "remito"
   const [pdfBusy, setPdfBusy] = useState(false);
   const [orderQuery, setOrderQuery] = useState("");
@@ -294,6 +298,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(CAT_KEY, JSON.stringify(extraCatalog)); } catch {} }, [extraCatalog]);
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
+  useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -337,6 +342,7 @@ export default function PriceDesk() {
         setExtraCatalog((c) => resolve(d.catalog, c, "catalog"));
         setLedger((lg) => resolve(d.ledger, lg, "ledger"));
         setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
+        setAliases((al) => resolveObj(d.aliases, al, "aliases"));
         if (!skipObjects) {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
           setTimes((t) => resolveObj(d.times, t, "times"));
@@ -370,6 +376,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("lista", lista); }, [lista]);
   useEffect(() => { syncUp("ledger", ledger); }, [ledger]);
   useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
+  useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -865,51 +872,54 @@ export default function PriceDesk() {
   }
 
   // ---- cuentas corrientes ----
-  // saldo = lo que el cliente nos debe (side client) / lo que le debemos al proveedor (side supplier).
-  // cargo suma, pago resta. La factura genera cargos automáticos; los pagos se registran a mano.
-  const ledgerView = useMemo(() => {
-    const movs = [];
-    // CARGOS derivados de las facturas (no se guardan)
+  // Débito suma al saldo, Crédito resta. Cliente: saldo = lo que nos debe. Proveedor: saldo = lo que le debemos.
+  // Cargos (venta/compra) DERIVADOS de las facturas; pagos y gastos son manuales. Alias fusiona cuentas.
+  function canon(name) { const n = (name || "—").trim() || "—"; return aliases[n] || n; }
+
+  const accounts = useMemo(() => {
+    const byParty = {};
+    const add = (party, m) => { const p = canon(party); (byParty[p] ||= []).push(m); };
+    // cargos derivados de las facturas
     for (const f of invoiceHistory) {
       if (f.type !== "factura") continue;
       if (ledgerSide === "client") {
-        movs.push({ id: `f-${f.no}-cli`, ts: f.ts, party: f.client || "—", type: "cargo", amount: Number(f.total) || 0, concept: `Factura #${f.no}`, date: f.date, ref: f.no, derived: true });
+        add(f.client || "—", { key: `f-${f.no}`, ts: f.ts, date: f.date, concept: `Factura #${f.no}`, ref: f.no, debito: Number(f.total) || 0, credito: 0, derived: true });
       } else {
-        for (const [sp, c] of Object.entries(f.supplierCosts || {})) {
-          movs.push({ id: `f-${f.no}-${sp}`, ts: f.ts, party: sp, type: "cargo", amount: Number(c) || 0, concept: `Compra factura #${f.no}`, date: f.date, ref: f.no, derived: true });
-        }
+        for (const [sp, c] of Object.entries(f.supplierCosts || {})) add(sp, { key: `f-${f.no}-${sp}`, ts: f.ts, date: f.date, concept: `Compra fact. #${f.no}`, ref: f.no, debito: Number(c) || 0, credito: 0, derived: true });
       }
     }
-    // MANUALES de este lado: pagos y gastos (los cargos automáticos viejos se ignoran, ahora se derivan)
+    // movimientos manuales (pagos / gastos); ignora cargos automáticos viejos
     for (const e of ledger) {
       if (e.side !== ledgerSide) continue;
       if (e.type === "cargo" && e.ref) continue;
-      movs.push(e);
+      const pago = e.type === "pago";
+      add(e.party, { key: e.id, id: e.id, ts: e.ts, date: e.date, concept: e.concept, ref: e.ref || "", debito: pago ? 0 : (Number(e.amount) || 0), credito: pago ? (Number(e.amount) || 0) : 0, derived: false });
     }
-    const byParty = {};
-    for (const e of movs) {
-      const p = e.party || "—";
-      (byParty[p] ||= { party: p, saldo: 0, movs: [] });
-      byParty[p].saldo += (e.type === "pago" ? -1 : 1) * (Number(e.amount) || 0);
-      byParty[p].movs.push(e);
+    const out = {};
+    for (const [party, movs] of Object.entries(byParty)) {
+      movs.sort((a, b) => (a.ts || 0) - (b.ts || 0)); // cronológico para el saldo corriente
+      let saldo = 0;
+      const rows = movs.map((m) => { saldo += (m.debito || 0) - (m.credito || 0); return { ...m, saldo }; });
+      out[party] = { party, rows, saldo };
     }
-    const parties = Object.values(byParty).sort((a, b) => b.saldo - a.saldo);
-    parties.forEach((p) => p.movs.sort((a, b) => (b.ts || 0) - (a.ts || 0)));
-    const total = parties.reduce((a, p) => a + p.saldo, 0);
-    return { parties, total };
-  }, [invoiceHistory, ledger, ledgerSide]);
+    return out;
+  }, [invoiceHistory, ledger, ledgerSide, aliases]);
+
+  const accountNames = useMemo(() => Object.keys(accounts).sort((a, b) => a.localeCompare(b)), [accounts]);
+  const currentAccount = accounts[canon(ledgerAccount)] || null;
+  const totalSaldo = useMemo(() => Object.values(accounts).reduce((a, x) => a + x.saldo, 0), [accounts]);
 
   function registerPay() {
     const amt = parseFloat(String(payForm.amount).replace(/[^0-9.]/g, "")) || 0;
-    const party = payForm.party.trim();
-    if (!party) { alert("Elegí o escribí a quién corresponde el movimiento."); return; }
+    const party = canon(ledgerAccount);
+    if (!ledgerAccount) { alert("Elegí una cuenta primero."); return; }
     if (amt <= 0) { alert("Ingresá un monto mayor a 0."); return; }
     setLedger((lg) => [{
       id: uid(), ts: Date.now(), side: ledgerSide, party,
       type: payForm.type, amount: amt, concept: payForm.concept.trim() || (payForm.type === "pago" ? "Pago" : "Gasto envío proveedor"),
       date: payForm.date || today(), ref: "",
     }, ...lg]);
-    setPayForm({ party: "", amount: "", concept: "", date: today(), type: "pago" });
+    setPayForm({ amount: "", concept: "", date: today(), type: "pago" });
   }
   function deleteLedgerEntry(id) {
     if (!confirm("¿Borrar este movimiento?")) return;
@@ -919,13 +929,13 @@ export default function PriceDesk() {
     if (!confirm(`¿Borrar la factura #${no}? Se recalculan cuentas y PnL.`)) return;
     setInvoiceHistory((h) => h.filter((x) => x.ts !== ts));
   }
-  // partes conocidas para el datalist según el lado
-  const ledgerParties = useMemo(() => {
-    const set = new Set(ledger.filter((e) => e.side === ledgerSide).map((e) => e.party).filter(Boolean));
-    if (ledgerSide === "client") clients.forEach((c) => c.name && set.add(c.name));
-    else supplierList.forEach((s) => set.add(s));
-    return [...set].sort();
-  }, [ledger, ledgerSide, clients, supplierList]);
+  function mergeAccounts() {
+    if (!mergeFrom || !mergeTo || mergeFrom === mergeTo) { alert("Elegí dos cuentas distintas para fusionar."); return; }
+    setAliases((a) => ({ ...a, [mergeFrom]: mergeTo }));
+    if (ledgerAccount === mergeFrom) setLedgerAccount(mergeTo);
+    setMergeFrom(""); setMergeTo("");
+  }
+  function unmerge(name) { setAliases((a) => { const n = { ...a }; delete n[name]; return n; }); }
 
   // PnL / Margen — agregado desde el historial (solo facturas = ventas)
   const pnlView = useMemo(() => {
@@ -1718,76 +1728,95 @@ export default function PriceDesk() {
 
       {view === "cuentas" && (
         <section style={s.section}>
-          <div style={s.sectionTitle}>
-            CUENTAS CORRIENTES — {ledgerSide === "client" ? "lo que los clientes nos deben" : "lo que le debemos a cada proveedor"} · se generan solas con cada factura
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-            <button onClick={() => setLedgerSide("client")} style={{ ...s.planTab, ...(ledgerSide === "client" ? s.planTabOn : {}) }}>👤 Clientes (nos deben)</button>
-            <button onClick={() => setLedgerSide("supplier")} style={{ ...s.planTab, ...(ledgerSide === "supplier" ? s.planTabOn : {}) }}>🏭 Proveedores (les debemos)</button>
+          <div style={s.sectionTitle}>CUENTAS CORRIENTES</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <button onClick={() => { setLedgerSide("client"); setLedgerAccount(""); }} style={{ ...s.planTab, ...(ledgerSide === "client" ? s.planTabOn : {}) }}>👤 Clientes (nos deben)</button>
+            <button onClick={() => { setLedgerSide("supplier"); setLedgerAccount(""); }} style={{ ...s.planTab, ...(ledgerSide === "supplier" ? s.planTabOn : {}) }}>🏭 Proveedores (les debemos)</button>
             <span style={{ marginLeft: "auto", fontSize: 12, color: "#9aa4b2" }}>
-              Saldo total: <b style={{ color: ledgerView.total >= 0 ? "#fbbf24" : "#4ade80" }}>{money(ledgerView.total)}</b>
+              Total {ledgerSide === "client" ? "por cobrar" : "por pagar"}: <b style={{ color: totalSaldo >= 0 ? "#fbbf24" : "#4ade80" }}>{money(totalSaldo)}</b>
             </span>
           </div>
 
-          {/* registrar pago / ajuste manual */}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14, padding: 10, background: "#11151f", border: "1px solid #1c2230", borderRadius: 6 }}>
-            <label style={s.ctrlLabel}><span style={s.ctrlText}>{ledgerSide === "client" ? "CLIENTE" : "PROVEEDOR"}</span>
-              <input list="ledger-parties" value={payForm.party} onChange={(e) => setPayForm((f) => ({ ...f, party: e.target.value }))} style={{ ...s.invInput, width: 170 }} placeholder="Nombre" />
-              <datalist id="ledger-parties">{ledgerParties.map((p) => <option key={p} value={p} />)}</datalist>
-            </label>
-            <label style={s.ctrlLabel}><span style={s.ctrlText}>TIPO</span>
-              <select value={payForm.type} onChange={(e) => setPayForm((f) => ({ ...f, type: e.target.value }))} style={{ ...s.invInput, width: 140 }}>
-                <option value="pago">Pago (−)</option>
-                <option value="gasto">Gasto envío (+)</option>
-              </select>
-            </label>
-            <label style={s.ctrlLabel}><span style={s.ctrlText}>MONTO</span>
-              <input value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} style={{ ...s.invInput, width: 90 }} inputMode="decimal" placeholder="0" />
-            </label>
-            <label style={s.ctrlLabel}><span style={s.ctrlText}>FECHA</span>
-              <input value={payForm.date} onChange={(e) => setPayForm((f) => ({ ...f, date: e.target.value }))} style={{ ...s.invInput, width: 110 }} />
-            </label>
-            <label style={s.ctrlLabel}><span style={s.ctrlText}>CONCEPTO</span>
-              <input value={payForm.concept} onChange={(e) => setPayForm((f) => ({ ...f, concept: e.target.value }))} style={{ ...s.invInput, width: 160 }} placeholder="opcional" />
-            </label>
-            <button onClick={registerPay} style={{ ...s.toolBtn, marginLeft: 0 }}>+ Registrar</button>
+          {/* solapas: una por cuenta */}
+          <div style={s.acctTabs}>
+            {accountNames.length === 0 && <span style={s.askHint}>Sin cuentas todavía. Generá una factura o registrá un movimiento.</span>}
+            {accountNames.map((name) => {
+              const on = canon(ledgerAccount) === name;
+              const sal = accounts[name].saldo;
+              return (
+                <button key={name} onClick={() => setLedgerAccount(name)} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}) }}>
+                  {name} <b style={{ color: sal > 0.005 ? "#fbbf24" : sal < -0.005 ? "#4ade80" : "#6b7385" }}>{money(sal)}</b>
+                </button>
+              );
+            })}
           </div>
 
-          {ledgerView.parties.length === 0 ? (
-            <div style={s.askHint}>Todavía no hay movimientos. Generá una factura (Órdenes) o registrá un pago/cargo arriba.</div>
+          {/* fusionar cuentas (ej. Intalper = Ojus) */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", margin: "6px 0 14px", fontSize: 11, color: "#8b94a7" }}>
+            <span>Fusionar:</span>
+            <select value={mergeFrom} onChange={(e) => setMergeFrom(e.target.value)} style={{ ...s.invInput, width: 150 }}><option value="">cuenta…</option>{accountNames.map((n) => <option key={n} value={n}>{n}</option>)}</select>
+            <span>→</span>
+            <select value={mergeTo} onChange={(e) => setMergeTo(e.target.value)} style={{ ...s.invInput, width: 150 }}><option value="">dentro de…</option>{accountNames.map((n) => <option key={n} value={n}>{n}</option>)}</select>
+            <button onClick={mergeAccounts} style={{ ...s.toolBtn, marginLeft: 0 }}>Fusionar</button>
+            {Object.entries(aliases).map(([a, b]) => (
+              <span key={a} style={{ background: "#11151f", border: "1px solid #1c2230", borderRadius: 4, padding: "2px 6px" }}>{a} → {b} <span style={s.chipX} onClick={() => unmerge(a)}>×</span></span>
+            ))}
+          </div>
+
+          {!currentAccount ? (
+            <div style={s.askHint}>Elegí una cuenta arriba para ver su detalle.</div>
           ) : (
-            ledgerView.parties.map((p) => (
-              <div key={p.party} style={{ marginBottom: 16, border: "1px solid #1c2230", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#13182333" }}>
-                  <b style={{ color: "#cfd6e4" }}>{p.party}</b>
-                  <span>Saldo: <b style={{ color: p.saldo > 0.005 ? "#fbbf24" : p.saldo < -0.005 ? "#4ade80" : "#6b7385" }}>{money(p.saldo)}</b></span>
-                </div>
-                <table style={s.invTable}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
-                      <th style={{ ...s.invTh, textAlign: "left" }}>Factura #</th>
-                      <th style={{ ...s.invTh, textAlign: "left" }}>Concepto</th>
-                      <th style={s.invTh}>Entrada (cargo)</th>
-                      <th style={s.invTh}>Salida (pago)</th>
-                      <th style={s.invTh}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {p.movs.map((e) => (
-                      <tr key={e.id}>
-                        <td style={{ ...s.invTd, textAlign: "left" }}>{e.date}</td>
-                        <td style={{ ...s.invTd, textAlign: "left", color: "#6fa8e6" }}>{e.ref ? `#${e.ref}` : "—"}</td>
-                        <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{e.concept}</td>
-                        <td style={{ ...s.invTd, color: "#fbbf24" }}>{e.type !== "pago" ? money(e.amount) : ""}</td>
-                        <td style={{ ...s.invTd, color: "#4ade80" }}>{e.type === "pago" ? money(e.amount) : ""}</td>
-                        <td style={s.invTd}>{e.derived ? <span style={{ color: "#3a4255", fontSize: 10 }} title="Derivado de la factura — se edita/borra desde el Historial">🔒</span> : <span style={s.chipX} onClick={() => deleteLedgerEntry(e.id)}>×</span>}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <div style={{ border: "1px solid #1c2230", borderRadius: 6, overflow: "hidden" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "#131823" }}>
+                <b style={{ color: "#e8ecf3", fontSize: 14 }}>{currentAccount.party}</b>
+                <span style={{ fontSize: 13 }}>{ledgerSide === "client" ? "Nos debe" : "Le debemos"}: <b style={{ color: currentAccount.saldo > 0.005 ? "#fbbf24" : currentAccount.saldo < -0.005 ? "#4ade80" : "#6b7385" }}>{money(currentAccount.saldo)}</b></span>
               </div>
-            ))
+              <table style={s.invTable}>
+                <thead>
+                  <tr>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Fecha</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Concepto</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Ref</th>
+                    <th style={s.invTh}>Débito</th>
+                    <th style={s.invTh}>Crédito</th>
+                    <th style={s.invTh}>Saldo</th>
+                    <th style={s.invTh}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {currentAccount.rows.map((m) => (
+                    <tr key={m.key}>
+                      <td style={{ ...s.invTd, textAlign: "left" }}>{m.date}</td>
+                      <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{m.concept}</td>
+                      <td style={{ ...s.invTd, textAlign: "left", color: "#6fa8e6" }}>{m.ref ? `#${m.ref}` : ""}</td>
+                      <td style={{ ...s.invTd, color: "#fbbf24" }}>{m.debito ? money(m.debito) : ""}</td>
+                      <td style={{ ...s.invTd, color: "#4ade80" }}>{m.credito ? money(m.credito) : ""}</td>
+                      <td style={{ ...s.invTd, background: "#0f1a12", color: m.saldo < -0.005 ? "#f87171" : "#cfe6b8", fontWeight: 600 }}>{money(m.saldo)}</td>
+                      <td style={s.invTd}>{m.derived ? <span style={{ color: "#3a4255", fontSize: 10 }} title="Derivado de la factura — se edita/borra desde el Historial">🔒</span> : <span style={s.chipX} onClick={() => deleteLedgerEntry(m.id)}>×</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {/* registrar pago / gasto en esta cuenta */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", padding: 10, borderTop: "1px solid #1c2230", background: "#0f131c" }}>
+                <label style={s.ctrlLabel}><span style={s.ctrlText}>TIPO</span>
+                  <select value={payForm.type} onChange={(e) => setPayForm((f) => ({ ...f, type: e.target.value }))} style={{ ...s.invInput, width: 140 }}>
+                    <option value="pago">Pago (Crédito −)</option>
+                    <option value="gasto">Gasto envío (Débito +)</option>
+                  </select>
+                </label>
+                <label style={s.ctrlLabel}><span style={s.ctrlText}>MONTO</span>
+                  <input value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} style={{ ...s.invInput, width: 100 }} inputMode="decimal" placeholder="0" />
+                </label>
+                <label style={s.ctrlLabel}><span style={s.ctrlText}>FECHA</span>
+                  <input value={payForm.date} onChange={(e) => setPayForm((f) => ({ ...f, date: e.target.value }))} style={{ ...s.invInput, width: 110 }} />
+                </label>
+                <label style={s.ctrlLabel}><span style={s.ctrlText}>CONCEPTO</span>
+                  <input value={payForm.concept} onChange={(e) => setPayForm((f) => ({ ...f, concept: e.target.value }))} style={{ ...s.invInput, width: 180 }} placeholder="opcional" />
+                </label>
+                <button onClick={registerPay} style={{ ...s.toolBtn, marginLeft: 0 }}>+ Registrar en {currentAccount.party}</button>
+              </div>
+            </div>
           )}
         </section>
       )}
@@ -2085,6 +2114,9 @@ const styles = {
   invTd: { padding: "3px 8px", textAlign: "right", borderBottom: "1px solid #151a26", fontVariantNumeric: "tabular-nums" },
   invFoot: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, flexWrap: "wrap", gap: 10, fontSize: 12, color: "#cfd6e4" },
   editBanner: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, background: "#1a2410", border: "1px solid #3a5a1d", color: "#cfe6b8", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 12 },
+  acctTabs: { display: "flex", gap: 6, flexWrap: "wrap", padding: 8, background: "#0f131c", border: "1px solid #1c2230", borderRadius: 6 },
+  acctTab: { display: "inline-flex", gap: 6, alignItems: "center", background: "#171c28", border: "1px solid #232a3a", color: "#aeb6c5", borderRadius: 5, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 12 },
+  acctTabOn: { background: "#1d2740", borderColor: "#3a5b8f", color: "#e8ecf3" },
   pdfBtn: { background: "#16a34a", color: "#fff", padding: "8px 18px", borderRadius: 4, fontSize: 12.5, fontWeight: 600, textDecoration: "none", fontFamily: "inherit" },
   cotInputRow: { display: "flex", gap: 8, alignItems: "center", marginBottom: 10 },
   cotSearch: { flex: 1, maxWidth: 360, background: "#11151f", border: "1px solid #232a3a", color: "#e8ecf3", padding: "8px 10px", borderRadius: 4, fontFamily: "inherit", fontSize: 13, outline: "none" },
