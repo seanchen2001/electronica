@@ -742,6 +742,43 @@ export default function PriceDesk() {
   const orderSubtotal = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.price) || 0), 0);
   const orderCost = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
 
+  // Guardar la orden en el historial (base de datos de la transacción) — sin generar PDF.
+  // Alimenta PnL y cuentas corrientes. Reutilizado por downloadDoc y por "registrar sin PDF".
+  function commitOrderToHistory() {
+    if (!order.items.length) { alert("Agregá al menos un item."); return false; }
+    const totalDoc = orderSubtotal + (Number(order.shippingCost) || 0);
+    const supplierCosts = {};
+    for (const { supplier, items } of remitoGroups) {
+      if (supplier === "(sin proveedor)") continue;
+      supplierCosts[supplier] = items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
+    }
+    const rec = {
+      no: order.invoiceNo, date: order.date, type: docType,
+      client: selClient.name || "—", clientId: orderClientId, shipId: orderShipId,
+      piezas: orderPiezas, subtotal: orderSubtotal, shipping: Number(order.shippingCost) || 0,
+      total: totalDoc, cost: orderCost, margin: orderSubtotal - orderCost,
+      supplierCosts, items: JSON.parse(JSON.stringify(order.items)),
+      order: JSON.parse(JSON.stringify(order)), clientPdf: clientForPdf,
+    };
+    if (editingTs) {
+      setInvoiceHistory((h) => h.map((x) => (x.ts === editingTs ? { ...rec, ts: editingTs } : x)));
+      setEditingTs(null);
+    } else {
+      setInvoiceHistory((h) => [{ ...rec, ts: Date.now() }, ...h].slice(0, 1000));
+      if (docType === "factura") {
+        setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
+      }
+    }
+    return true;
+  }
+  // Registrar una operación pasada sin PDF (backfill de PnL / cuentas).
+  function registerPastOperation() {
+    if (commitOrderToHistory()) {
+      alert(`Operación registrada (venta ${money(orderSubtotal)}, costo ${money(orderCost)}, margen ${money(orderSubtotal - orderCost)}). Ya está en PnL y Cuentas.`);
+      resetOrder();
+    }
+  }
+
   // Generate the PDF only on click (not on every render) — avoids saturating the browser.
   async function downloadDoc() {
     setPdfBusy(true);
@@ -757,32 +794,7 @@ export default function PriceDesk() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-      // log al historial = base de datos de la transacción completa (+ autoincremento del invoice #)
-      const totalDoc = orderSubtotal + (Number(order.shippingCost) || 0);
-      const supplierCosts = {};
-      for (const { supplier, items } of remitoGroups) {
-        if (supplier === "(sin proveedor)") continue;
-        supplierCosts[supplier] = items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.cost) || 0), 0);
-      }
-      const rec = {
-        no: order.invoiceNo, date: order.date, type: docType,
-        client: selClient.name || "—", clientId: orderClientId, shipId: orderShipId,
-        piezas: orderPiezas, subtotal: orderSubtotal, shipping: Number(order.shippingCost) || 0,
-        total: totalDoc, cost: orderCost, margin: orderSubtotal - orderCost,
-        supplierCosts, items: JSON.parse(JSON.stringify(order.items)),
-        // datos para regenerar / editar cualquier documento desde el Historial
-        order: JSON.parse(JSON.stringify(order)), clientPdf: clientForPdf,
-      };
-      if (editingTs) {
-        // editando una factura existente: reemplaza el registro (mismo #) y recalcula cuentas/PnL
-        setInvoiceHistory((h) => h.map((x) => (x.ts === editingTs ? { ...rec, ts: editingTs } : x)));
-        setEditingTs(null);
-      } else {
-        setInvoiceHistory((h) => [{ ...rec, ts: Date.now() }, ...h].slice(0, 1000));
-        if (docType === "factura") {
-          setOrderField("invoiceNo", String((parseInt(order.invoiceNo, 10) || nextInvoiceNo(invoiceHistory)) + 1));
-        }
-      }
+      commitOrderToHistory();
     } catch (e) {
       alert("Error generando el PDF: " + (e?.message || e));
     } finally {
@@ -1656,6 +1668,9 @@ export default function PriceDesk() {
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b> · Costo: <b style={{ color: "#9aa4b2" }}>{money(orderCost)}</b> · Margen: <b style={{ color: "#4ade80" }}>{money(orderSubtotal - orderCost)}</b></>}</span>
           <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
             {(editingTs || order.items.length > 0) && <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Nueva orden</button>}
+            {docType === "factura" && !editingTs && order.items.length > 0 && (
+              <button onClick={registerPastOperation} title="Guarda la operación en PnL y Cuentas sin generar PDF (para operaciones pasadas)" style={{ ...s.toolBtn, marginLeft: 0 }}>Registrar sin PDF</button>
+            )}
             {order.items.length > 0
               ? (docType === "factura"
                   ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
