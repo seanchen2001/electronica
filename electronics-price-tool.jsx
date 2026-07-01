@@ -1064,7 +1064,7 @@ export default function PriceDesk() {
         ))}
       </div>
       {(chatMode === "parse" || chatMode === "auto") && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0", fontSize: 11, color: "#9aa4b2" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "8px 0", fontSize: 11, color: "#9aa4b2" }}>
           <span>Proveedor destino:</span>
           <select value={parseSupplier} onChange={(e) => setParseSupplier(e.target.value)} style={{ ...s.select, flex: 1 }}>
             <option value="">—</option>
@@ -1072,26 +1072,42 @@ export default function PriceDesk() {
           </select>
         </div>
       )}
-      <textarea value={chatText} onChange={(e) => setChatText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busyChat) submitChat(); } }}
-        onPaste={onChatPaste} rows={3}
-        placeholder="Escribí una pregunta, pegá una cotización o pedí marcar modelos. El asistente detecta qué querés (o elegí el modo arriba). Pegá o subí un screenshot también."
-        style={s.chatInput} />
-      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-        <label style={{ ...s.imgBtn, cursor: busyChat ? "default" : "pointer" }} title="Subir screenshot (cotización u OCR)">📷
-          <input type="file" accept="image/*" disabled={busyChat} style={{ display: "none" }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) submitChat(f); e.target.value = ""; }} />
-        </label>
-        <button onClick={() => submitChat()} disabled={busyChat} style={{ ...s.askBtn, flex: 1, ...(busyChat ? s.busy : {}) }}>
-          {busyChat ? "…" : "Enviar"}
-        </button>
+
+      {/* resultados: crecen y ocupan el alto disponible */}
+      <div style={s.chatResults}>
+        {chatNote && <div style={chatNote.err ? s.errorMsg : s.okMsg}>{chatNote.text}</div>}
+        {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
+        {answer && <div style={s.answerCard}>{answer}</div>}
+        {parseMsg && <div style={parseMsg.err ? s.errorMsg : s.okMsg}>{parseMsg.text}{parseMsg.skus?.length ? <span style={s.okSkus}> ({parseMsg.skus.join(", ")})</span> : null}</div>}
+        {markMsg && <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>}
+        {!chatNote && !answerErr && !answer && !parseMsg && !markMsg && (
+          <div style={s.chatEmpty}>
+            <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ea0bf" }}>Escribí lo que necesites</b> y el asistente detecta qué querés:</p>
+            <p style={{ margin: "4px 0" }}>💬 <b>Preguntar</b> — “¿dónde está más competitivo VITEL esta semana?”</p>
+            <p style={{ margin: "4px 0" }}>📥 <b>Cargar precios</b> — pegá o subí 📷 una cotización de un proveedor.</p>
+            <p style={{ margin: "4px 0" }}>✅ <b>Marcar</b> — “marcá el S26 ultra y el A56” para armar la cotización.</p>
+          </div>
+        )}
       </div>
-      {chatNote && <div style={chatNote.err ? s.errorMsg : s.okMsg}>{chatNote.text}</div>}
-      {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
-      {answer && <div style={s.answerCard}>{answer}</div>}
-      {parseMsg && <div style={parseMsg.err ? s.errorMsg : s.okMsg}>{parseMsg.text}{parseMsg.skus?.length ? <span style={s.okSkus}> ({parseMsg.skus.join(", ")})</span> : null}</div>}
-      {markMsg && <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>}
-      <div style={s.askHint}>Enter envía · Shift+Enter salto de línea.</div>
+
+      {/* input abajo (estilo chat) */}
+      <div style={s.chatInputWrap}>
+        <textarea value={chatText} onChange={(e) => setChatText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busyChat) submitChat(); } }}
+          onPaste={onChatPaste} rows={4}
+          placeholder="Escribí una pregunta, pegá una cotización o pedí marcar modelos… (Enter envía)"
+          style={s.chatInput} />
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <label style={{ ...s.imgBtn, cursor: busyChat ? "default" : "pointer" }} title="Subir screenshot (cotización u OCR)">📷
+            <input type="file" accept="image/*" disabled={busyChat} style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) submitChat(f); e.target.value = ""; }} />
+          </label>
+          <button onClick={() => submitChat()} disabled={busyChat} style={{ ...s.askBtn, flex: 1, ...(busyChat ? s.busy : {}) }}>
+            {busyChat ? "…" : "Enviar"}
+          </button>
+        </div>
+        <div style={s.askHint}>Enter envía · Shift+Enter salto de línea.</div>
+      </div>
     </aside>
   );
 
@@ -1860,7 +1876,10 @@ const styles = {
   listaFill: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, color: "#9aa3b5" },
   listaAuto: { color: "#7c8597", fontStyle: "italic" },
   mesaMain: { minWidth: 0, transition: "margin-right .2s ease" },
-  chatBox: { position: "fixed", top: 0, right: 0, height: "100vh", width: 360, boxSizing: "border-box", overflowY: "auto", background: "#0f1420", borderLeft: "1px solid #22304a", padding: 14, zIndex: 40, transition: "transform .2s ease" },
+  chatBox: { position: "fixed", top: 0, right: 0, height: "100vh", width: 360, boxSizing: "border-box", display: "flex", flexDirection: "column", background: "#0f1420", borderLeft: "1px solid #22304a", padding: 14, zIndex: 40, transition: "transform .2s ease" },
+  chatResults: { flex: 1, overflowY: "auto", marginTop: 8, display: "flex", flexDirection: "column", gap: 8 },
+  chatEmpty: { fontSize: 12, color: "#6b7385", lineHeight: 1.5, border: "1px dashed #22304a", borderRadius: 6, padding: 12, background: "#0b0e14" },
+  chatInputWrap: { flexShrink: 0, paddingTop: 10, borderTop: "1px solid #1c2230", marginTop: 8 },
   chatHead: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, letterSpacing: 1, color: "#6fa8e6", fontWeight: 700, marginBottom: 8 },
   chatCollapse: { background: "transparent", border: "1px solid #22304a", color: "#9aa4b2", borderRadius: 4, cursor: "pointer", padding: "1px 8px", fontSize: 13 },
   chatInput: { width: "100%", boxSizing: "border-box", background: "#0b0e14", border: "1px solid #232a3a", color: "#e8ecf3", borderRadius: 4, padding: "8px 9px", fontFamily: "inherit", fontSize: 12.5, outline: "none", resize: "vertical" },
