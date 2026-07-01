@@ -249,7 +249,7 @@ export default function PriceDesk() {
   const [orderQuery, setOrderQuery] = useState("");
   const [order, setOrder] = useState({
     items: [], invoiceNo: String(nextInvoiceNo(load(HIST_KEY, []))), date: today(), payment: "W/T", fob: "Miami",
-    salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0,
+    salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "",
   });
   const [orderClientId, setOrderClientId] = useState(""); // selección en Órdenes
   const [orderShipId, setOrderShipId] = useState("");
@@ -774,37 +774,40 @@ export default function PriceDesk() {
     return Object.entries(by).map(([supplier, items]) => ({ supplier, items }));
   }, [order.items]);
 
-  async function downloadSupplierRemitos() {
-    if (!order.items.length) return;
-    setPdfBusy(true);
-    try {
-      const groups = remitoGroups.map(({ supplier, items }) => ({
-        supplier,
-        client: { name: supplier, addressLines: [], ...shipInfo }, // sin datos de cliente, pero con la dirección de envío
-        order: { ...order, items },
-      }));
-      const blob = await pdf(<RemitosDoc company={COMPANY} groups={groups} />).toBlob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `remitos-proveedor-${order.invoiceNo}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
-    } catch (e) {
-      alert("Error generando los remitos: " + (e?.message || e));
-    } finally {
-      setPdfBusy(false);
-    }
-  }
-
   async function saveBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  // Remitos por proveedor: un archivo por proveedor, sin precios ni cliente, con la dirección
+  // de entrega (depósito). Nombre: Remito_<Factura#>_<proveedor>.pdf
+  async function emitSupplierRemitos(ord, deliveryAddr, extra = {}) {
+    const by = {};
+    for (const it of ord.items || []) { const k = it.supplier || "sin_proveedor"; (by[k] ||= []).push(it); }
+    const entries = Object.entries(by);
+    if (!entries.length) { alert("La orden no tiene items."); return; }
+    for (const [supplier, items] of entries) {
+      const cli = { name: supplier, addressLines: [], direccion: deliveryAddr || "", notify: extra.notify, telefono: extra.telefono, contacto: extra.contacto };
+      const doc = <InvoiceDoc company={COMPANY} client={cli} order={{ ...ord, items }} mode="remito" />;
+      const safe = String(supplier).replace(/[^\w-]+/g, "_");
+      await saveBlob(await pdf(doc).toBlob(), `Remito_${ord.invoiceNo}_${safe}.pdf`);
+      if (entries.length > 1) await new Promise((r) => setTimeout(r, 450)); // separar descargas
+    }
+  }
+
+  async function downloadSupplierRemitos() {
+    if (!order.items.length) return;
+    setPdfBusy(true);
+    try {
+      await emitSupplierRemitos(order, order.deliveryAddr || shipInfo.direccion, shipInfo);
+    } catch (e) {
+      alert("Error generando los remitos: " + (e?.message || e));
+    } finally {
+      setPdfBusy(false);
+    }
   }
 
   // Regenerar un PDF (factura / remito / remitos por proveedor) desde un registro del historial.
@@ -819,22 +822,11 @@ export default function PriceDesk() {
         const lines = c ? (c.address || "").split("\n").map((s) => s.trim()).filter(Boolean) : [];
         cli = { name: rec.client, addressLines: lines, direccion: lines.join(", "), telefono: c?.phone, notify: "", contacto: "" };
       }
-      let doc, fname;
       if (mode === "remitos") {
-        const by = {};
-        for (const it of ord.items || []) { const k = it.supplier || "(sin proveedor)"; (by[k] ||= []).push(it); }
-        const groups = Object.entries(by).map(([supplier, items]) => ({
-          supplier,
-          client: { name: supplier, addressLines: [], notify: cli.notify, direccion: cli.direccion, telefono: cli.telefono, contacto: cli.contacto },
-          order: { ...ord, items },
-        }));
-        doc = <RemitosDoc company={COMPANY} groups={groups} />;
-        fname = `remitos-proveedor-${rec.no}.pdf`;
+        await emitSupplierRemitos(ord, ord.deliveryAddr || cli.direccion, cli);
       } else {
-        doc = <InvoiceDoc company={COMPANY} client={cli} order={ord} mode={mode} />;
-        fname = `${mode}-${rec.no}.pdf`;
+        await saveBlob(await pdf(<InvoiceDoc company={COMPANY} client={cli} order={ord} mode={mode} />).toBlob(), `${mode}-${rec.no}.pdf`);
       }
-      await saveBlob(await pdf(doc).toBlob(), fname);
     } catch (e) {
       alert("Error generando el PDF: " + (e?.message || e));
     } finally {
@@ -1496,7 +1488,7 @@ export default function PriceDesk() {
         <div style={s.sectionTitle}>ÓRDENES — Factura / Remito</div>
         <div style={s.planTabs}>
           <button onClick={() => setDocType("factura")} style={{ ...s.planTab, ...(docType === "factura" ? s.planTabOn : {}) }}>Factura (con precios)</button>
-          <button onClick={() => setDocType("remito")} style={{ ...s.planTab, ...(docType === "remito" ? s.planTabOn : {}) }}>Remito (sin precios)</button>
+          <button onClick={() => setDocType("remito")} style={{ ...s.planTab, ...(docType === "remito" ? s.planTabOn : {}) }}>Remito x proveedor (sin precios)</button>
         </div>
 
         <div style={s.invGrid}>
@@ -1518,20 +1510,21 @@ export default function PriceDesk() {
           </div>
 
           <div style={s.invCol}>
-            <div style={s.invColHead}>ENVÍO / SHIPPING</div>
-            <select value={orderShipId} onChange={(e) => setOrderShipId(e.target.value)} style={s.invInput}>
-              <option value="">— sin envío —</option>
+            <div style={s.invColHead}>ENTREGA / SHIPPING</div>
+            <select value={orderShipId} onChange={(e) => {
+              const id = e.target.value; setOrderShipId(id);
+              const sh = shippings.find((x) => x.id === id);
+              if (sh && sh.direccion) setOrderField("deliveryAddr", sh.direccion); // prefijar dirección de entrega
+            }} style={s.invInput}>
+              <option value="">— sin envío guardado —</option>
               {shippings.map((sh) => <option key={sh.id} value={sh.id}>{sh.label || sh.notify}</option>)}
             </select>
-            {orderShipId && (
-              <div style={s.selBox}>
-                {selShip.notify ? <div style={s.selLine}>Notify: {selShip.notify}</div> : null}
-                {selShip.direccion ? <div style={s.selLine}>{selShip.direccion}</div> : null}
-                {selShip.telefono ? <div style={s.selLine}>Tel: {selShip.telefono}</div> : null}
-                {selShip.contacto ? <div style={s.selLine}>Contacto: {selShip.contacto}</div> : null}
-              </div>
-            )}
-            <div style={s.selHint}>Agregar / editar → tab Clientes</div>
+            <label style={{ ...s.invField, marginTop: 6 }}>
+              <span style={s.invFieldLbl}>Dirección de entrega (depósito) — aparece en el remito</span>
+              <textarea value={order.deliveryAddr || ""} onChange={(e) => setOrderField("deliveryAddr", e.target.value)}
+                rows={2} placeholder="Dirección del depósito / destino…" style={s.invArea} />
+            </label>
+            <div style={s.selHint}>Se guarda con la orden. Envíos guardados → tab Clientes.</div>
           </div>
 
           <div style={s.invCol}>
@@ -1611,15 +1604,14 @@ export default function PriceDesk() {
         <div style={s.invFoot}>
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b> · Costo: <b style={{ color: "#9aa4b2" }}>{money(orderCost)}</b> · Margen: <b style={{ color: "#4ade80" }}>{money(orderSubtotal - orderCost)}</b></>}</span>
           {order.items.length > 0
-            ? <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-                <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
-                  {pdfBusy ? "Generando…" : `⬇ Descargar ${docType} PDF`}
-                </button>
-                <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un remito sin precios por cada proveedor (una página por proveedor)"
-                  style={{ ...s.pdfBtn, ...s.toolBtnGhost, ...(pdfBusy ? s.busy : {}), marginLeft: 0, cursor: pdfBusy ? "default" : "pointer" }}>
-                  ⬇ Remitos x proveedor ({remitoGroups.length})
-                </button>
-              </span>
+            ? (docType === "factura"
+                ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                    {pdfBusy ? "Generando…" : "⬇ Descargar Factura PDF"}
+                  </button>
+                : <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un archivo por proveedor (sin precios ni cliente, con dirección de entrega)"
+                    style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                    {pdfBusy ? "Generando…" : `⬇ Descargar Remitos por proveedor (${remitoGroups.length})`}
+                  </button>)
             : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
         </div>
       </section>
