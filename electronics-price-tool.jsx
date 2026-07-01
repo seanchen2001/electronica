@@ -741,7 +741,9 @@ export default function PriceDesk() {
         client: selClient.name || "—", clientId: orderClientId,
         piezas: orderPiezas, subtotal: orderSubtotal, shipping: Number(order.shippingCost) || 0,
         total: totalDoc, cost: orderCost, margin: orderSubtotal - orderCost,
-        supplierCosts, items: JSON.parse(JSON.stringify(order.items)), ts: Date.now(),
+        supplierCosts, items: JSON.parse(JSON.stringify(order.items)),
+        // datos para regenerar cualquier PDF desde el Historial
+        order: JSON.parse(JSON.stringify(order)), clientPdf: clientForPdf, ts: Date.now(),
       }, ...h].slice(0, 1000));
       if (docType === "factura") {
         // las cuentas (cargo al cliente + compra a cada proveedor) se DERIVAN del historial.
@@ -788,6 +790,44 @@ export default function PriceDesk() {
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e) {
       alert("Error generando los remitos: " + (e?.message || e));
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
+  async function saveBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  // Regenerar un PDF (factura / remito / remitos por proveedor) desde un registro del historial.
+  async function downloadFromHistory(rec, mode) {
+    setPdfBusy(true);
+    try {
+      // registros nuevos traen order + clientPdf; los viejos se reconstruyen de items/client
+      const ord = rec.order || { items: rec.items || [], invoiceNo: rec.no, date: rec.date, payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "", dueDate: rec.date, shippingCost: rec.shipping || 0 };
+      const cli = rec.clientPdf || { name: rec.client, addressLines: [] };
+      let doc, fname;
+      if (mode === "remitos") {
+        const by = {};
+        for (const it of ord.items || []) { const k = it.supplier || "(sin proveedor)"; (by[k] ||= []).push(it); }
+        const groups = Object.entries(by).map(([supplier, items]) => ({
+          supplier,
+          client: { name: supplier, addressLines: [], notify: cli.notify, direccion: cli.direccion, telefono: cli.telefono, contacto: cli.contacto },
+          order: { ...ord, items },
+        }));
+        doc = <RemitosDoc company={COMPANY} groups={groups} />;
+        fname = `remitos-proveedor-${rec.no}.pdf`;
+      } else {
+        doc = <InvoiceDoc company={COMPANY} client={cli} order={ord} mode={mode} />;
+        fname = `${mode}-${rec.no}.pdf`;
+      }
+      await saveBlob(await pdf(doc).toBlob(), fname);
+    } catch (e) {
+      alert("Error generando el PDF: " + (e?.message || e));
     } finally {
       setPdfBusy(false);
     }
@@ -1810,6 +1850,7 @@ export default function PriceDesk() {
                     <th style={s.invTh}>Total</th>
                     <th style={s.invTh}>Costo</th>
                     <th style={s.invTh}>Margen</th>
+                    <th style={{ ...s.invTh, textAlign: "left" }}>Descargar</th>
                     <th style={s.invTh}></th>
                   </tr>
                 </thead>
@@ -1824,6 +1865,11 @@ export default function PriceDesk() {
                       <td style={{ ...s.invTd, color: "#fbbf24" }}>{money(h.total)}</td>
                       <td style={{ ...s.invTd, color: "#9aa4b2" }}>{h.cost != null ? money(h.cost) : "—"}</td>
                       <td style={{ ...s.invTd, color: (h.margin || 0) >= 0 ? "#4ade80" : "#f87171" }}>{h.margin != null ? money(h.margin) : "—"}</td>
+                      <td style={{ ...s.invTd, textAlign: "left", whiteSpace: "nowrap" }}>
+                        <button onClick={() => downloadFromHistory(h, "factura")} disabled={pdfBusy} style={s.miniBtn} title="Factura (con precios)">Factura</button>{" "}
+                        <button onClick={() => downloadFromHistory(h, "remito")} disabled={pdfBusy} style={s.miniBtn} title="Remito al cliente (sin precios)">Remito</button>{" "}
+                        <button onClick={() => downloadFromHistory(h, "remitos")} disabled={pdfBusy} style={s.miniBtn} title="Remitos por proveedor (sin precios)">Rem. x prov.</button>
+                      </td>
                       <td style={s.invTd}><span style={s.chipX} onClick={() => deleteInvoice(h.ts, h.no)}>×</span></td>
                     </tr>
                   ))}
