@@ -88,12 +88,19 @@ function InvoicePage({ company, client, order, mode }) {
   const shipping = Number(order.shippingCost) || 0;
   const total = subtotal + shipping;
   const hasShip = client.notify || client.direccion || client.telefono || client.contacto;
-  const meta = [
-    ["Date:", order.date],
-    ["Invoice #:", order.invoiceNo],
-    ["Payment:", order.payment],
-    ["FOB:", order.fob],
-  ];
+  const meta = remito
+    ? [
+        ["Proveedor:", client.name],
+        ["Remito Fact. #:", order.invoiceNo],
+        ["Date:", order.date],
+        ["FOB:", order.fob],
+      ]
+    : [
+        ["Date:", order.date],
+        ["Invoice #:", order.invoiceNo],
+        ["Payment:", order.payment],
+        ["FOB:", order.fob],
+      ];
 
   return (
       <Page size="LETTER" style={s.page}>
@@ -118,7 +125,7 @@ function InvoicePage({ company, client, order, mode }) {
 
           {/* to */}
           <View style={s.toRow}>
-            <Text style={s.toLabel}>To:</Text>
+            <Text style={s.toLabel}>{remito ? "Prov.:" : "To:"}</Text>
             <View>
               <Text style={s.clientName}>{client.name}</Text>
               {(client.addressLines || []).map((l, i) => <Text style={s.clientLine} key={i}>{l}</Text>)}
