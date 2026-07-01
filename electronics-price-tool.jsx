@@ -797,7 +797,8 @@ export default function PriceDesk() {
     if (!entries.length) { alert("La orden no tiene items."); return; }
     for (const [supplier, items] of entries) {
       const code = supplierCode(supplier);
-      const cli = { name: supplier, code, addressLines: [], direccion: deliveryAddr || "", notify: extra.notify, telefono: extra.telefono, contacto: extra.contacto };
+      // el remito usa SIEMPRE el código del proveedor (adentro y en el nombre del archivo)
+      const cli = { name: code, addressLines: [], direccion: deliveryAddr || "", notify: extra.notify, telefono: extra.telefono, contacto: extra.contacto };
       const doc = <InvoiceDoc company={COMPANY} client={cli} order={{ ...ord, items }} mode="remito" />;
       await saveBlob(await pdf(doc).toBlob(), `Remito_${ord.invoiceNo}_${code}.pdf`);
       if (entries.length > 1) await new Promise((r) => setTimeout(r, 450)); // separar descargas
