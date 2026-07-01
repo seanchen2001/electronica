@@ -770,7 +770,11 @@ export default function PriceDesk() {
     try {
       const groups = remitoGroups.map(({ supplier, items }) => ({
         supplier,
-        client: { name: supplier, addressLines: [] },
+        client: {
+          name: supplier, addressLines: [],
+          // sin datos de cliente, pero con la dirección de envío
+          notify: selShip.notify, direccion: selShip.direccion, telefono: selShip.telefono, contacto: selShip.contacto,
+        },
         order: { ...order, items },
       }));
       const blob = await pdf(<RemitosDoc company={COMPANY} groups={groups} />).toBlob();
