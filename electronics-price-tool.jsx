@@ -1053,10 +1053,10 @@ export default function PriceDesk() {
   // chatbox unificado de escritorio (a la derecha, colapsable)
   const busyChat = asking || parsing;
   const chatBox = (
-    <aside style={s.chatBox}>
+    <aside style={{ ...s.chatBox, transform: chatOpen ? "none" : "translateX(100%)" }}>
       <div style={s.chatHead}>
         <span>💬 ASISTENTE</span>
-        <button onClick={() => setChatOpen(false)} title="Colapsar" style={s.chatCollapse}>▸</button>
+        <button onClick={() => setChatOpen(false)} title="Colapsar hacia la derecha" style={s.chatCollapse}>▶</button>
       </div>
       <div style={s.modeTabs}>
         {[["auto", "Auto"], ["ask", "Preguntar"], ["parse", "Cargar precios"], ["mark", "Marcar"]].map(([m, label]) => (
@@ -1096,7 +1096,7 @@ export default function PriceDesk() {
   );
 
   return (
-    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}) }}>
+    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}), ...(!isMobile && chatOpen && view === "mesa" ? { paddingRight: 380 } : {}) }}>
       <header style={s.header}>
         <div>
           <div style={s.title}>PRICE DESK</div>
@@ -1130,7 +1130,7 @@ export default function PriceDesk() {
       </div>
 
       {view === "mesa" && (
-      <div style={!isMobile ? s.mesaWrap : undefined}>
+      <div>
       <div style={!isMobile ? s.mesaMain : undefined}>
       {isMobile && askSection}
       {/* toolbar (solo escritorio) */}
@@ -1415,9 +1415,10 @@ export default function PriceDesk() {
       </section>
 
       </div>
-      {!isMobile && (chatOpen ? chatBox : (
-        <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬</button>
-      ))}
+      {!isMobile && chatBox}
+      {!isMobile && !chatOpen && (
+        <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬 Asistente</button>
+      )}
       </div>
       )}
 
@@ -1841,7 +1842,7 @@ export default function PriceDesk() {
 }
 
 const styles = {
-  app: { background: "#0b0e14", color: "#d6dae3", minHeight: "100vh", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: 12.5, padding: "16px 20px 48px", boxSizing: "border-box" },
+  app: { background: "#0b0e14", color: "#d6dae3", minHeight: "100vh", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: 12.5, padding: "16px 20px 48px", boxSizing: "border-box", transition: "padding-right .2s ease" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", borderBottom: "1px solid #1c2230", paddingBottom: 12, marginBottom: 10, flexWrap: "wrap", gap: 12 },
   title: { fontSize: 18, fontWeight: 700, letterSpacing: 1.5, color: "#e8ecf3" },
   subtitle: { fontSize: 11, color: "#6b7385", marginTop: 2 },
@@ -1858,13 +1859,12 @@ const styles = {
   loadBanner: { display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", background: "#13233a", border: "1px solid #244068", color: "#cfd6e4", borderRadius: 6, padding: "8px 12px", marginBottom: 16, fontSize: 12 },
   listaFill: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, color: "#9aa3b5" },
   listaAuto: { color: "#7c8597", fontStyle: "italic" },
-  mesaWrap: { display: "flex", gap: 16, alignItems: "flex-start" },
-  mesaMain: { flex: 1, minWidth: 0 },
-  chatBox: { width: 340, flexShrink: 0, position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto", background: "#0f1420", border: "1px solid #22304a", borderRadius: 8, padding: 12 },
+  mesaMain: { minWidth: 0, transition: "margin-right .2s ease" },
+  chatBox: { position: "fixed", top: 0, right: 0, height: "100vh", width: 360, boxSizing: "border-box", overflowY: "auto", background: "#0f1420", borderLeft: "1px solid #22304a", padding: 14, zIndex: 40, transition: "transform .2s ease" },
   chatHead: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, letterSpacing: 1, color: "#6fa8e6", fontWeight: 700, marginBottom: 8 },
-  chatCollapse: { background: "transparent", border: "1px solid #22304a", color: "#9aa4b2", borderRadius: 4, cursor: "pointer", padding: "1px 7px", fontSize: 12 },
+  chatCollapse: { background: "transparent", border: "1px solid #22304a", color: "#9aa4b2", borderRadius: 4, cursor: "pointer", padding: "1px 8px", fontSize: 13 },
   chatInput: { width: "100%", boxSizing: "border-box", background: "#0b0e14", border: "1px solid #232a3a", color: "#e8ecf3", borderRadius: 4, padding: "8px 9px", fontFamily: "inherit", fontSize: 12.5, outline: "none", resize: "vertical" },
-  chatReopen: { position: "sticky", top: 12, flexShrink: 0, alignSelf: "flex-start", background: "#0f1420", border: "1px solid #22304a", color: "#6fa8e6", borderRadius: 8, cursor: "pointer", padding: "8px 10px", fontSize: 16 },
+  chatReopen: { position: "fixed", top: "50%", right: 0, transform: "translateY(-50%)", background: "#0f1420", border: "1px solid #22304a", borderRight: "none", color: "#6fa8e6", borderRadius: "8px 0 0 8px", cursor: "pointer", padding: "16px 7px", fontSize: 15, zIndex: 40, writingMode: "vertical-rl", letterSpacing: 1 },
   listaPctInput: { width: 44, background: "#0b0e14", border: "1px solid #232a3a", color: "#e8ecf3", borderRadius: 3, textAlign: "right", fontFamily: "inherit", fontSize: 11, padding: "2px 4px", outline: "none" },
   deltaTag: { color: "#a78bfa", fontSize: 9, marginLeft: 2 },
   listaSpread: { borderLeft: "2px solid #7c3aed", background: "#191526" },
