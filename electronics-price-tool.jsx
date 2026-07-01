@@ -264,7 +264,12 @@ export default function PriceDesk() {
   }, []);
 
   // ask the desk
-  const [askMode, setAskMode] = useState("ask"); // "ask" | "mark"
+  const [askMode, setAskMode] = useState("ask"); // "ask" | "mark" (mobile)
+  // chatbox unificado (desktop): un solo input, el AI descubre el intent (o selector manual)
+  const [chatText, setChatText] = useState("");
+  const [chatMode, setChatMode] = useState("auto"); // "auto" | "ask" | "parse" | "mark"
+  const [chatOpen, setChatOpen] = useState(true);
+  const [chatNote, setChatNote] = useState(null); // {err, text} — feedback del ruteo de intent
   const [query, setQuery] = useState("");
   const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState(null);
@@ -410,30 +415,33 @@ export default function PriceDesk() {
     });
   }
 
-  async function runParse(file = null) {
+  async function runParse(file = null, textArg = null, supplierArg = null) {
+    const text = textArg ?? rawText;
+    const supplier = supplierArg ?? parseSupplier;
     if (!apiKey.trim()) { setParseMsg({ err: true, text: "Enter your Gemini API key first." }); return; }
-    if (!rawText.trim() && !file) { setParseMsg({ err: true, text: "Pegá una cotización o subí una foto." }); return; }
+    if (!text.trim() && !file) { setParseMsg({ err: true, text: "Pegá una cotización o subí una foto." }); return; }
+    if (!supplier) { setParseMsg({ err: true, text: "Elegí a qué proveedor cargar la cotización." }); return; }
     setParsing(true);
     setParseMsg(null);
     try {
       const images = file ? [await fileToData(file)] : [];
-      const { matched, newModels } = await parseSupplierQuote(rawText, apiKey.trim(), parseSystem, catalogNames, images);
+      const { matched, newModels } = await parseSupplierQuote(text, apiKey.trim(), parseSystem, catalogNames, images);
       const keys = Object.keys(matched);
       setPrices((prev) => {
         const next = { ...prev };
-        for (const sku of keys) next[sku] = { ...(next[sku] || {}), [parseSupplier]: matched[sku] };
+        for (const sku of keys) next[sku] = { ...(next[sku] || {}), [supplier]: matched[sku] };
         return next;
       });
-      stampTimes(keys.map((sku) => [sku, parseSupplier, false]));
-      setRawText("");
+      stampTimes(keys.map((sku) => [sku, supplier, false]));
+      if (textArg == null) setRawText("");
       // modelos nuevos → a la cola de confirmación (con el proveedor de origen)
       const adds = newModels
         .filter((m) => !pendingNew.some((p) => p.name === m.name))
-        .map((m) => ({ ...m, supplier: parseSupplier }));
+        .map((m) => ({ ...m, supplier }));
       if (adds.length) setPendingNew((p) => [...p, ...adds]);
       setParseMsg({
         err: false,
-        text: `Cargué ${keys.length} SKU${keys.length === 1 ? "" : "s"} para ${parseSupplier}${adds.length ? ` · ${adds.length} modelo(s) nuevo(s) detectado(s) → confirmá abajo` : ""}.`,
+        text: `Cargué ${keys.length} SKU${keys.length === 1 ? "" : "s"} para ${supplier}${adds.length ? ` · ${adds.length} modelo(s) nuevo(s) → revisalos en el modal` : ""}.`,
         skus: keys,
       });
     } catch (e) {
@@ -862,9 +870,10 @@ export default function PriceDesk() {
     return { sales, ventas, costo, gastos, margen, margenPct, piezas, supplierRows };
   }, [invoiceHistory, ledger]);
 
-  async function askDesk() {
+  async function askDesk(qArg) {
+    const q = (qArg ?? query).trim();
     if (!apiKey.trim()) { setAnswerErr("Enter your Gemini API key first."); return; }
-    if (!query.trim()) return;
+    if (!q) return;
     setAsking(true); setAnswerErr(null);
     try {
       const rows = catalog.map(({ name, cat }) => {
@@ -875,10 +884,10 @@ export default function PriceDesk() {
         ? { date: new Date(prevSnap.ts).toISOString().slice(0, 10), prices: prevSnap.prices }
         : null;
       const content =
-        JSON.stringify({ margin_pct: marginNum, rows, previous }) + "\n\nQuestion: " + query;
+        JSON.stringify({ margin_pct: marginNum, rows, previous }) + "\n\nQuestion: " + q;
       const text = await callGemini({ system: DESK_SYSTEM, content, apiKey: apiKey.trim(), maxTokens: 1024 });
       setAnswer(text);
-      setQuery("");
+      if (qArg == null) setQuery("");
     } catch (e) {
       setAnswerErr(e.message);
     } finally {
@@ -886,13 +895,14 @@ export default function PriceDesk() {
     }
   }
 
-  async function runMark() {
+  async function runMark(qArg, image) {
+    const q = (qArg ?? query).trim();
     if (!apiKey.trim()) { setMarkMsg({ err: true, text: "Cargá la API key de Gemini primero." }); return; }
-    if (!query.trim()) return;
+    if (!q && !image) return;
     setAsking(true); setMarkMsg(null);
     try {
-      const skus = await matchModels(query.trim(), apiKey.trim(), markSystem, catalogNames);
-      setQuery("");
+      const skus = await matchModels(q, apiKey.trim(), markSystem, catalogNames, image ? [image] : []);
+      if (qArg == null) setQuery("");
       if (!skus.length) {
         setMarkMsg({ err: false, text: "No reconocí modelos del catálogo en ese texto." });
       } else {
@@ -951,6 +961,57 @@ export default function PriceDesk() {
     }
   }
 
+  // ---- chatbox unificado: el AI descubre el intent ----
+  async function classifyIntent(text) {
+    const sys = "Sos el router de una mesa de precios de celulares. Clasificá el mensaje del usuario y devolvé SOLO JSON " +
+      '{"intent":"ask|parse|mark","supplier":""}. ' +
+      "intent 'parse' = es una cotización/lista de precios de un proveedor para cargar a la tabla (varios modelos con números). " +
+      "intent 'mark' = pide seleccionar/tildar modelos para armar una cotización al cliente. " +
+      "intent 'ask' = una pregunta sobre los datos/precios. " +
+      "supplier: si el texto menciona uno de estos proveedores, ponelo exacto, si no dejalo vacío: " + supplierList.join(", ") + ".";
+    const out = await callGemini({ system: sys, content: text, apiKey: apiKey.trim(), json: true, maxTokens: 200 });
+    const p = JSON.parse(stripFences(out));
+    return { intent: ["ask", "parse", "mark"].includes(p.intent) ? p.intent : "ask", supplier: p.supplier || "" };
+  }
+
+  async function submitChat(file = null) {
+    const text = chatText.trim();
+    if (!apiKey.trim()) { setChatNote({ err: true, text: "Cargá la contraseña / API key primero." }); return; }
+    if (!text && !file) return;
+    setChatNote(null);
+    let mode = chatMode;
+    let supplier = parseSupplier;
+    try {
+      if (mode === "auto") {
+        if (file && !text) { mode = "parse"; } // una foto sola casi siempre es una cotización
+        else {
+          setAsking(true);
+          const c = await classifyIntent(text);
+          setAsking(false);
+          mode = c.intent;
+          if (c.supplier && supplierList.includes(c.supplier)) { supplier = c.supplier; setParseSupplier(c.supplier); }
+          setChatNote({ err: false, text: `Intent detectado: ${mode === "ask" ? "Pregunta" : mode === "parse" ? `Cargar precios${supplier ? " → " + supplier : ""}` : "Marcar modelos"}` });
+        }
+      }
+      if (mode === "ask") await askDesk(text);
+      else if (mode === "parse") await runParse(file, text || null, supplier);
+      else if (mode === "mark") await runMark(text, file ? await fileToData(file) : null);
+      setChatText("");
+    } catch (e) {
+      setAsking(false);
+      setChatNote({ err: true, text: "No pude interpretar el mensaje: " + (e?.message || e) + ". Probá con el selector de modo." });
+    }
+  }
+
+  function onChatPaste(e) {
+    for (const it of e.clipboardData?.items || []) {
+      if (it.type.startsWith("image/")) {
+        const f = it.getAsFile();
+        if (f) { e.preventDefault(); submitChat(f); return; }
+      }
+    }
+  }
+
   const s = styles;
   let lastCat = null;
 
@@ -989,6 +1050,51 @@ export default function PriceDesk() {
     </section>
   );
 
+  // chatbox unificado de escritorio (a la derecha, colapsable)
+  const busyChat = asking || parsing;
+  const chatBox = (
+    <aside style={s.chatBox}>
+      <div style={s.chatHead}>
+        <span>💬 ASISTENTE</span>
+        <button onClick={() => setChatOpen(false)} title="Colapsar" style={s.chatCollapse}>▸</button>
+      </div>
+      <div style={s.modeTabs}>
+        {[["auto", "Auto"], ["ask", "Preguntar"], ["parse", "Cargar precios"], ["mark", "Marcar"]].map(([m, label]) => (
+          <button key={m} onClick={() => setChatMode(m)} style={{ ...s.planTab, ...(chatMode === m ? s.planTabOn : {}) }}>{label}</button>
+        ))}
+      </div>
+      {(chatMode === "parse" || chatMode === "auto") && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0", fontSize: 11, color: "#9aa4b2" }}>
+          <span>Proveedor destino:</span>
+          <select value={parseSupplier} onChange={(e) => setParseSupplier(e.target.value)} style={{ ...s.select, flex: 1 }}>
+            <option value="">—</option>
+            {supplierList.map((sp) => <option key={sp} value={sp}>{sp}</option>)}
+          </select>
+        </div>
+      )}
+      <textarea value={chatText} onChange={(e) => setChatText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busyChat) submitChat(); } }}
+        onPaste={onChatPaste} rows={3}
+        placeholder="Escribí una pregunta, pegá una cotización o pedí marcar modelos. El asistente detecta qué querés (o elegí el modo arriba). Pegá o subí un screenshot también."
+        style={s.chatInput} />
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <label style={{ ...s.imgBtn, cursor: busyChat ? "default" : "pointer" }} title="Subir screenshot (cotización u OCR)">📷
+          <input type="file" accept="image/*" disabled={busyChat} style={{ display: "none" }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) submitChat(f); e.target.value = ""; }} />
+        </label>
+        <button onClick={() => submitChat()} disabled={busyChat} style={{ ...s.askBtn, flex: 1, ...(busyChat ? s.busy : {}) }}>
+          {busyChat ? "…" : "Enviar"}
+        </button>
+      </div>
+      {chatNote && <div style={chatNote.err ? s.errorMsg : s.okMsg}>{chatNote.text}</div>}
+      {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
+      {answer && <div style={s.answerCard}>{answer}</div>}
+      {parseMsg && <div style={parseMsg.err ? s.errorMsg : s.okMsg}>{parseMsg.text}{parseMsg.skus?.length ? <span style={s.okSkus}> ({parseMsg.skus.join(", ")})</span> : null}</div>}
+      {markMsg && <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>}
+      <div style={s.askHint}>Enter envía · Shift+Enter salto de línea.</div>
+    </aside>
+  );
+
   return (
     <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}) }}>
       <header style={s.header}>
@@ -1023,7 +1129,9 @@ export default function PriceDesk() {
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
       </div>
 
-      {view === "mesa" && (<>
+      {view === "mesa" && (
+      <div style={!isMobile ? s.mesaWrap : undefined}>
+      <div style={!isMobile ? s.mesaMain : undefined}>
       {isMobile && askSection}
       {/* toolbar (solo escritorio) */}
       {!isMobile && (
@@ -1054,7 +1162,8 @@ export default function PriceDesk() {
         </div>
       )}
 
-      {/* paste & parse */}
+      {/* paste & parse (solo mobile; en desktop está en el chatbox de la derecha) */}
+      {isMobile && (
       <section style={s.section}>
         <div style={s.sectionTitle}>PASTE &amp; PARSE — fill a supplier column from a messy quote</div>
         <div style={s.parseRow}>
@@ -1083,6 +1192,7 @@ export default function PriceDesk() {
         )}
 
       </section>
+      )}
 
       {/* comparison table */}
       <section style={s.section}>
@@ -1304,7 +1414,12 @@ export default function PriceDesk() {
         )}
       </section>
 
-      </>)}
+      </div>
+      {!isMobile && (chatOpen ? chatBox : (
+        <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬</button>
+      ))}
+      </div>
+      )}
 
       {view === "ordenes" && (
       <section style={s.section}>
@@ -1440,8 +1555,6 @@ export default function PriceDesk() {
       </section>
 
       )}
-
-      {view === "mesa" && !isMobile && askSection}
 
       {view === "clientes" && (
         <section style={s.section}>
@@ -1745,6 +1858,13 @@ const styles = {
   loadBanner: { display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", background: "#13233a", border: "1px solid #244068", color: "#cfd6e4", borderRadius: 6, padding: "8px 12px", marginBottom: 16, fontSize: 12 },
   listaFill: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, color: "#9aa3b5" },
   listaAuto: { color: "#7c8597", fontStyle: "italic" },
+  mesaWrap: { display: "flex", gap: 16, alignItems: "flex-start" },
+  mesaMain: { flex: 1, minWidth: 0 },
+  chatBox: { width: 340, flexShrink: 0, position: "sticky", top: 12, maxHeight: "calc(100vh - 24px)", overflowY: "auto", background: "#0f1420", border: "1px solid #22304a", borderRadius: 8, padding: 12 },
+  chatHead: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, letterSpacing: 1, color: "#6fa8e6", fontWeight: 700, marginBottom: 8 },
+  chatCollapse: { background: "transparent", border: "1px solid #22304a", color: "#9aa4b2", borderRadius: 4, cursor: "pointer", padding: "1px 7px", fontSize: 12 },
+  chatInput: { width: "100%", boxSizing: "border-box", background: "#0b0e14", border: "1px solid #232a3a", color: "#e8ecf3", borderRadius: 4, padding: "8px 9px", fontFamily: "inherit", fontSize: 12.5, outline: "none", resize: "vertical" },
+  chatReopen: { position: "sticky", top: 12, flexShrink: 0, alignSelf: "flex-start", background: "#0f1420", border: "1px solid #22304a", color: "#6fa8e6", borderRadius: 8, cursor: "pointer", padding: "8px 10px", fontSize: 16 },
   listaPctInput: { width: 44, background: "#0b0e14", border: "1px solid #232a3a", color: "#e8ecf3", borderRadius: 3, textAlign: "right", fontFamily: "inherit", fontSize: 11, padding: "2px 4px", outline: "none" },
   deltaTag: { color: "#a78bfa", fontSize: 9, marginLeft: 2 },
   listaSpread: { borderLeft: "2px solid #7c3aed", background: "#191526" },
