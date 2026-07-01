@@ -705,10 +705,18 @@ export default function PriceDesk() {
   function removeItem(idx) { setOrder((p) => ({ ...p, items: p.items.filter((_, i) => i !== idx) })); }
   const selClient = clients.find((c) => c.id === orderClientId) || blankClient();
   const selShip = shippings.find((sh) => sh.id === orderShipId) || blankShip();
+  const clientAddrLines = (selClient.address || "").split("\n").map((x) => x.trim()).filter(Boolean);
+  // dirección de envío para el remito: el Envío seleccionado y, si está vacío, la dirección del cliente
+  const shipInfo = {
+    notify: selShip.notify,
+    direccion: selShip.direccion || clientAddrLines.join(", "),
+    telefono: selShip.telefono || selClient.phone,
+    contacto: selShip.contacto,
+  };
   const clientForPdf = {
     name: selClient.name, ruc: selClient.ruc, phone: selClient.phone,
-    addressLines: (selClient.address || "").split("\n").map((x) => x.trim()).filter(Boolean),
-    notify: selShip.notify, direccion: selShip.direccion, telefono: selShip.telefono, contacto: selShip.contacto,
+    addressLines: clientAddrLines,
+    ...shipInfo,
   };
   const orderPiezas = order.items.reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const orderSubtotal = order.items.reduce((a, i) => a + (Number(i.qty) || 0) * (Number(i.price) || 0), 0);
@@ -772,11 +780,7 @@ export default function PriceDesk() {
     try {
       const groups = remitoGroups.map(({ supplier, items }) => ({
         supplier,
-        client: {
-          name: supplier, addressLines: [],
-          // sin datos de cliente, pero con la dirección de envío
-          notify: selShip.notify, direccion: selShip.direccion, telefono: selShip.telefono, contacto: selShip.contacto,
-        },
+        client: { name: supplier, addressLines: [], ...shipInfo }, // sin datos de cliente, pero con la dirección de envío
         order: { ...order, items },
       }));
       const blob = await pdf(<RemitosDoc company={COMPANY} groups={groups} />).toBlob();
@@ -809,7 +813,12 @@ export default function PriceDesk() {
     try {
       // registros nuevos traen order + clientPdf; los viejos se reconstruyen de items/client
       const ord = rec.order || { items: rec.items || [], invoiceNo: rec.no, date: rec.date, payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "", dueDate: rec.date, shippingCost: rec.shipping || 0 };
-      const cli = rec.clientPdf || { name: rec.client, addressLines: [] };
+      let cli = rec.clientPdf;
+      if (!cli) {
+        const c = clients.find((x) => x.id === rec.clientId);
+        const lines = c ? (c.address || "").split("\n").map((s) => s.trim()).filter(Boolean) : [];
+        cli = { name: rec.client, addressLines: lines, direccion: lines.join(", "), telefono: c?.phone, notify: "", contacto: "" };
+      }
       let doc, fname;
       if (mode === "remitos") {
         const by = {};
