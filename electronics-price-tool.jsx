@@ -1082,23 +1082,6 @@ export default function PriceDesk() {
           </div>
         )}
 
-        {pendingNew.length > 0 && (
-          <div style={s.newWrap}>
-            <div style={s.newHead}>🆕 Modelos nuevos detectados — revisá y confirmá para agregarlos al catálogo:</div>
-            {pendingNew.map((m, i) => (
-              <div style={s.newRow} key={i}>
-                <input value={m.name} onChange={(e) => editNew(i, "name", e.target.value)} style={{ ...s.invInput, flex: 1, minWidth: 180 }} />
-                <select value={CATEGORIES.includes(m.cat) ? m.cat : "Samsung"} onChange={(e) => editNew(i, "cat", e.target.value)} style={{ ...s.invInput, width: 130 }}>
-                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <span style={s.newPrice}>$<input value={m.price ?? ""} onChange={(e) => editNew(i, "price", parseFloat(String(e.target.value).replace(/[^0-9.]/g, "")) || null)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a" }} /></span>
-                <span style={s.newSup}>{m.supplier}</span>
-                <button onClick={() => confirmNew(i)} style={s.newAdd}>✓ Agregar</button>
-                <button onClick={() => dismissNew(i)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>✕</button>
-              </div>
-            ))}
-          </div>
-        )}
       </section>
 
       {/* comparison table */}
@@ -1716,6 +1699,30 @@ export default function PriceDesk() {
           )}
         </section>
       )}
+
+      {/* Modal: modelos nuevos detectados — aparece sí o sí sobre todo */}
+      {pendingNew.length > 0 && (
+        <div style={s.modalOverlay} onClick={() => setPendingNew([])}>
+          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={s.newHead}>🆕 {pendingNew.length} modelo(s) nuevo(s) detectado(s) — revisá y confirmá para agregarlos al catálogo:</div>
+            {pendingNew.map((m, i) => (
+              <div style={s.newRow} key={i}>
+                <input value={m.name} onChange={(e) => editNew(i, "name", e.target.value)} style={{ ...s.invInput, flex: 1, minWidth: 160 }} />
+                <select value={CATEGORIES.includes(m.cat) ? m.cat : "Samsung"} onChange={(e) => editNew(i, "cat", e.target.value)} style={{ ...s.invInput, width: 130 }}>
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <span style={s.newPrice}>$<input value={m.price ?? ""} onChange={(e) => editNew(i, "price", parseFloat(String(e.target.value).replace(/[^0-9.]/g, "")) || null)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a" }} /></span>
+                <span style={s.newSup}>{m.supplier}</span>
+                <button onClick={() => confirmNew(i)} style={s.newAdd}>✓ Agregar</button>
+                <button onClick={() => dismissNew(i)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>✕</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+              <button onClick={() => setPendingNew([])} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cerrar (descartar todos)</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1823,6 +1830,8 @@ const styles = {
   selLine: { marginBottom: 2 },
   selHint: { fontSize: 10, color: "#525a6b", marginTop: 2 },
   newWrap: { marginTop: 10, background: "#11151f", border: "1px solid #244068", borderRadius: 6, padding: 10 },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(3,6,12,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "8vh 16px", zIndex: 1000 },
+  modalCard: { background: "#0f1420", border: "1px solid #2a4a75", borderRadius: 8, padding: 16, width: "min(720px, 96vw)", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" },
   newHead: { fontSize: 11.5, color: "#6fa8e6", fontWeight: 600, marginBottom: 8 },
   newRow: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" },
   newPrice: { display: "inline-flex", alignItems: "center", gap: 2, color: "#fbbf24", fontWeight: 600 },
