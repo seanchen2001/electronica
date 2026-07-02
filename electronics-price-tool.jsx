@@ -1266,12 +1266,24 @@ export default function PriceDesk() {
     const hit = catalog.find((c) => normSku(c.name) === n);
     return hit ? hit.name : null;
   }
+  // Agente matcher: entra SOLO cuando el match determinista falla. Un LLM mapea el
+  // nombre raro al SKU exacto (o null si de verdad no está en el catálogo).
+  async function resolveSkuSmart(name) {
+    const det = resolveSku(name);
+    if (det) return det;
+    try {
+      const sys = "Mapeá el modelo del usuario al SKU EXACTO de esta lista, o devolvé null si no corresponde a ninguno (respetá RAM/almacenamiento y EURO/LATIN). SOLO JSON {\"sku\": \"<exacto de la lista>\" o null}.\nLista:\n" + catalogNames.join("\n");
+      const out = await callGemini({ system: sys, content: String(name || ""), apiKey: apiKey.trim(), json: true, maxTokens: 120 });
+      const p = JSON.parse(stripFences(out));
+      return p && p.sku && catalogNames.includes(p.sku) ? p.sku : null;
+    } catch { return null; }
+  }
   async function runTool(name, args) {
-    if (name === "best_supplier") { const sku = resolveSku(args.sku); return sku ? bestSuppliers(sku, args.qty || 1) : { error: `No encontré "${args.sku}" en el catálogo.` }; }
+    if (name === "best_supplier") { const sku = await resolveSkuSmart(args.sku); return sku ? bestSuppliers(sku, args.qty || 1) : { error: `No encontré "${args.sku}" en el catálogo.` }; }
     if (name === "negotiation_report") return negotiationReport(args.scope || "order");
     if (name === "order_summary") return orderSummaryData();
     if (name === "add_order_line") {
-      const sku = resolveSku(args.sku);
+      const sku = await resolveSkuSmart(args.sku);
       if (!sku) return { ok: false, error: `SKU desconocido: ${args.sku}` };
       const sup = args.supplier || cheapestSupplier(sku);
       const qty = Number(args.qty) || 1;
@@ -1299,8 +1311,8 @@ export default function PriceDesk() {
     }
     if (name === "quote_analysis") {
       const r1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
-      const items = (args.items || []).map((it) => {
-        const sku = resolveSku(it.sku), qty = Number(it.qty) || 1;
+      const items = await Promise.all((args.items || []).map(async (it) => {
+        const sku = await resolveSkuSmart(it.sku), qty = Number(it.qty) || 1;
         const known = !!sku;
         const bs = known ? bestSuppliers(sku, qty) : null;
         const costo = bs?.mejor?.costo ?? null;
@@ -1317,7 +1329,7 @@ export default function PriceDesk() {
           podemos_igualar: suger != null && costo != null ? suger >= costo : null,
           por_debajo_costo: suger != null && costo != null ? suger < costo : false,
         };
-      });
+      }));
       return { items, margin_pct_actual: marginNum, nota: "margen_%_ es sobre el costo (igual que el MARGIN % de la app)." };
     }
     if (name === "build_quote") {
