@@ -10,6 +10,7 @@ import {
 // so the numbers never land in the public bundle.
 import { pdf } from "@react-pdf/renderer";
 import InvoiceDoc, { RemitosDoc } from "./InvoiceDoc.jsx";
+import { AGENT_TOOLS, buildAgentSystem, REVIEW_SYSTEM } from "./lib/agent-tools.js";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -173,6 +174,31 @@ async function callGemini({ system, content, apiKey, maxTokens = 2048, json = fa
   return (data.candidates?.[0]?.content?.parts || []).map((p) => p.text).join("");
 }
 
+// Variante con function-calling: manda la conversación completa + tools y devuelve
+// el turno del modelo (content con parts que pueden ser text o functionCall).
+async function callGeminiTools({ system, contents, tools, apiKey, maxTokens = 2048 }) {
+  let data;
+  if (import.meta.env.DEV) {
+    const body = { contents, tools, generationConfig: { temperature: 0, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } } };
+    if (system) body.system_instruction = { parts: [{ text: system }] };
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+    );
+    if (!res.ok) { let d = ""; try { d = (await res.json())?.error?.message || ""; } catch {} throw new Error(`Gemini ${res.status}: ${d}`); }
+    data = await res.json();
+  } else {
+    const res = await fetch("/api/gemini", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-app-password": apiKey || "" },
+      body: JSON.stringify({ system, contents, tools, maxTokens, model: GEMINI_MODEL }),
+    });
+    if (!res.ok) { let d = ""; try { const e = await res.json(); d = e?.error?.message || e?.error || ""; } catch {} throw new Error(`Error ${res.status}: ${d}`); }
+    data = await res.json();
+  }
+  return data.candidates?.[0]?.content || { role: "model", parts: [] };
+}
+
 const toNum = (v) => {
   const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.]/g, "")) : v;
   return typeof n === "number" && !Number.isNaN(n) ? n : null;
@@ -282,6 +308,12 @@ export default function PriceDesk() {
   const [orderClientId, setOrderClientId] = useState(""); // selección en Órdenes
   const [orderShipId, setOrderShipId] = useState("");
   const [editingTs, setEditingTs] = useState(null); // ts del registro del Historial que se está editando
+  // ---- agente ----
+  const [agentLog, setAgentLog] = useState([]); // [{role, text}]
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
+  const agentContents = useRef([]); // conversación multi-turno del agente
+  const orderRef = useRef(order); // espejo síncrono de la orden para los handlers del agente
 
   // móvil → layout compacto / AI-focus
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches);
@@ -1121,6 +1153,7 @@ export default function PriceDesk() {
 
   async function submitChat(file = null) {
     const text = chatText.trim();
+    if (chatMode === "agente") { if (text) { setChatText(""); runAgent(text); } return; }
     if (!apiKey.trim()) { setChatNote({ err: true, text: "Cargá la contraseña / API key primero." }); return; }
     if (!text && !file) return;
     setChatNote(null);
@@ -1156,6 +1189,164 @@ export default function PriceDesk() {
       }
     }
   }
+
+  // ---- agente de órdenes (function-calling) ----
+  useEffect(() => { orderRef.current = order; }, [order]);
+  function agentSetOrder(updater) { const next = updater(orderRef.current); orderRef.current = next; setOrder(next); }
+
+  // ranking de proveedores por costo para una cantidad (respeta tiers)
+  function bestSuppliers(sku, qty = 1) {
+    const row = prices[sku] || {};
+    const list = Object.keys(row)
+      .map((sp) => ({ supplier: sp, cost: costForQty(sku, sp, qty), base: row[sp], escala: hasTiers(sku, sp) }))
+      .filter((x) => typeof x.cost === "number")
+      .sort((a, b) => a.cost - b.cost);
+    const prevVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[sku]?.[sp]).filter((x) => typeof x === "number") : [];
+    const prevMin = prevVals.length ? Math.min(...prevVals) : null;
+    return {
+      sku, qty, ranking: list,
+      mejor: list[0] ? { proveedor: list[0].supplier, costo: list[0].cost } : null,
+      brecha_con_alternativa: list[0] && list[1] ? +(list[1].cost - list[0].cost).toFixed(2) : null,
+      un_solo_proveedor: list.length === 1,
+      subio_vs_semana_pasada: list[0] && prevMin != null ? list[0].cost > prevMin : false,
+    };
+  }
+  function negotiationReport(scope = "order") {
+    const skus = scope === "all" ? catalog.map((c) => c.name) : [...new Set(orderRef.current.items.map((i) => i.sku))];
+    const out = [];
+    for (const sku of skus) {
+      const qty = orderRef.current.items.find((i) => i.sku === sku)?.qty || 1;
+      const bs = bestSuppliers(sku, qty);
+      if (!bs.mejor) continue;
+      const flags = [];
+      if (bs.un_solo_proveedor) flags.push("sin competencia (un solo proveedor)");
+      if (bs.subio_vs_semana_pasada) flags.push("subió vs la semana pasada");
+      if (bs.brecha_con_alternativa != null && bs.brecha_con_alternativa > 0.005) flags.push(`la alternativa está $${bs.brecha_con_alternativa} más cara`);
+      if (flags.length) out.push({ sku, proveedor: bs.mejor.proveedor, costo: bs.mejor.costo, flags });
+    }
+    return { scope, sugerencias: out };
+  }
+  function orderSummaryData() {
+    const o = orderRef.current;
+    const lineas = o.items.map((it) => ({
+      modelo: it.sku, cantidad: Number(it.qty) || 0, color: it.color || "", proveedor: it.supplier || "",
+      costo: Number(it.cost) || 0, precio: Number(it.price) || 0,
+      margen: ((Number(it.price) || 0) - (Number(it.cost) || 0)) * (Number(it.qty) || 0),
+    }));
+    const venta = lineas.reduce((a, l) => a + l.precio * l.cantidad, 0);
+    const costo = lineas.reduce((a, l) => a + l.costo * l.cantidad, 0);
+    return { cliente: selClient.name || "(sin cliente)", fecha: o.date, entrega: o.deliveryAddr || "", margin_pct: marginNum, lineas, venta, costo, margen: venta - costo };
+  }
+  async function reviewOrder() {
+    const summary = orderSummaryData();
+    const issues = [];
+    if (!summary.lineas.length) issues.push("La orden está vacía.");
+    for (const l of summary.lineas) {
+      if (!l.proveedor) issues.push(`${l.modelo}: sin proveedor.`);
+      if (!l.precio) issues.push(`${l.modelo}: sin precio de venta.`);
+      if (!l.cantidad) issues.push(`${l.modelo}: cantidad 0.`);
+      if (l.precio && l.costo && l.precio < l.costo) issues.push(`${l.modelo}: precio por debajo del costo.`);
+    }
+    try {
+      const out = await callGemini({ system: REVIEW_SYSTEM, content: JSON.stringify(summary), apiKey: apiKey.trim(), json: true, maxTokens: 512 });
+      const p = JSON.parse(stripFences(out));
+      if (Array.isArray(p.issues)) for (const i of p.issues) if (i && !issues.includes(i)) issues.push(i);
+    } catch { /* el crítico es best-effort */ }
+    return { summary, issues };
+  }
+  async function runTool(name, args) {
+    if (name === "best_supplier") return bestSuppliers(args.sku, args.qty || 1);
+    if (name === "negotiation_report") return negotiationReport(args.scope || "order");
+    if (name === "order_summary") return orderSummaryData();
+    if (name === "add_order_line") {
+      const sku = args.sku;
+      if (!catalogNames.includes(sku)) return { ok: false, error: `SKU desconocido: ${sku}` };
+      const sup = args.supplier || cheapestSupplier(sku);
+      const qty = Number(args.qty) || 1;
+      agentSetOrder((o) => {
+        const items = [...o.items];
+        const idx = items.findIndex((i) => i.sku === sku && (i.color || "") === (args.color || ""));
+        const line = {
+          ...(idx >= 0 ? items[idx] : newOrderLine(sku)),
+          sku, qty, color: args.color || (idx >= 0 ? items[idx].color : ""), supplier: sup,
+          cost: costForQty(sku, sup, qty),
+          price: args.clientPrice != null ? Number(args.clientPrice) : (listaFor(sku) ?? aggBySku[sku]?.client ?? 0),
+          cat: catalog.find((c) => c.name === sku)?.cat || "",
+        };
+        if (idx >= 0) items[idx] = line; else items.push(line);
+        return { ...o, items };
+      });
+      return { ok: true, linea: { modelo: sku, cantidad: qty, proveedor: sup, costo: costForQty(sku, sup, qty) } };
+    }
+    if (name === "set_order_meta") {
+      if (args.clientName) { const c = clients.find((x) => (x.name || "").toLowerCase() === String(args.clientName).toLowerCase()); if (c) setOrderClientId(c.id); }
+      if (args.deliveryAddr) agentSetOrder((o) => ({ ...o, deliveryAddr: args.deliveryAddr }));
+      if (args.date) agentSetOrder((o) => ({ ...o, date: args.date }));
+      if (args.marginPct != null) setMargin(String(args.marginPct));
+      return { ok: true };
+    }
+    if (name === "build_quote") {
+      if (args.source === "client" || args.source === "lista") changeSource(args.source);
+      setSelected(Object.fromEntries(orderRef.current.items.map((i) => [i.sku, true])));
+      return { ok: true, nota: "Cotización marcada; el texto se ve en la Mesa (sección Cotización)." };
+    }
+    if (name === "generate_invoice") {
+      setDocType("factura");
+      const { summary, issues } = await reviewOrder();
+      setPendingAgentCommit({ kind: "invoice", summary, issues });
+      return { status: "needs_confirmation", issues, mensaje: "Le mostré el resumen al usuario y estoy esperando que confirme para generar la factura." };
+    }
+    if (name === "generate_remitos") {
+      const { summary, issues } = await reviewOrder();
+      setPendingAgentCommit({ kind: "remitos", summary, issues });
+      return { status: "needs_confirmation", issues, mensaje: "Esperando confirmación del usuario para generar los remitos por proveedor." };
+    }
+    return { ok: false, error: "herramienta desconocida" };
+  }
+  async function runAgent(userText) {
+    if (!apiKey.trim()) { setAgentLog((l) => [...l, { role: "system", text: "Cargá la contraseña / API key primero." }]); return; }
+    if (!userText.trim()) return;
+    setDocType("factura");
+    setAgentBusy(true);
+    setAgentLog((l) => [...l, { role: "you", text: userText }]);
+    const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean) });
+    const stateSnapshot = { orden_actual: orderSummaryData() };
+    const contents = [...agentContents.current, { role: "user", parts: [{ text: userText + "\n\nESTADO: " + JSON.stringify(stateSnapshot) }] }];
+    try {
+      for (let step = 0; step < 8; step++) {
+        const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048 });
+        contents.push(cand);
+        const calls = (cand.parts || []).filter((p) => p.functionCall).map((p) => p.functionCall);
+        const textOut = (cand.parts || []).filter((p) => p.text).map((p) => p.text).join("").trim();
+        if (textOut) setAgentLog((l) => [...l, { role: "agent", text: textOut }]);
+        if (!calls.length) break;
+        const responses = [];
+        let paused = false;
+        for (const fc of calls) {
+          setAgentLog((l) => [...l, { role: "tool", text: `⚙ ${fc.name}` }]);
+          const result = await runTool(fc.name, fc.args || {});
+          responses.push({ functionResponse: { name: fc.name, response: result } });
+          if (result && result.status === "needs_confirmation") paused = true;
+        }
+        contents.push({ role: "user", parts: responses });
+        if (paused) break;
+      }
+      agentContents.current = contents;
+    } catch (e) {
+      setAgentLog((l) => [...l, { role: "system", text: "Error: " + (e?.message || e) }]);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+  async function confirmAgentCommit() {
+    const c = pendingAgentCommit; setPendingAgentCommit(null);
+    if (!c) return;
+    try {
+      if (c.kind === "invoice") { setDocType("factura"); await downloadDoc(); setAgentLog((l) => [...l, { role: "system", text: "✅ Factura generada y registrada." }]); }
+      else if (c.kind === "remitos") { await downloadSupplierRemitos(); setAgentLog((l) => [...l, { role: "system", text: "✅ Remitos por proveedor generados." }]); }
+    } catch (e) { setAgentLog((l) => [...l, { role: "system", text: "Error al generar: " + (e?.message || e) }]); }
+  }
+  function resetAgent() { agentContents.current = []; setAgentLog([]); setPendingAgentCommit(null); }
 
   const s = styles;
   let lastCat = null;
@@ -1196,7 +1387,7 @@ export default function PriceDesk() {
   );
 
   // chatbox unificado de escritorio (a la derecha, colapsable)
-  const busyChat = asking || parsing;
+  const busyChat = asking || parsing || agentBusy;
   const chatBox = (
     <aside style={{ ...s.chatBox, transform: chatOpen ? "none" : "translateX(100%)" }}>
       <div style={s.chatHead}>
@@ -1204,7 +1395,7 @@ export default function PriceDesk() {
         <button onClick={() => setChatOpen(false)} title="Colapsar hacia la derecha" style={s.chatCollapse}>▶</button>
       </div>
       <div style={s.modeTabs}>
-        {[["auto", "Auto"], ["ask", "Preguntar"], ["parse", "Cargar precios"], ["mark", "Marcar"]].map(([m, label]) => (
+        {[["agente", "🤖 Agente"], ["auto", "Auto"], ["ask", "Preguntar"], ["parse", "Cargar precios"], ["mark", "Marcar"]].map(([m, label]) => (
           <button key={m} onClick={() => setChatMode(m)} style={{ ...s.planTab, ...(chatMode === m ? s.planTabOn : {}) }}>{label}</button>
         ))}
       </div>
@@ -1220,18 +1411,43 @@ export default function PriceDesk() {
 
       {/* resultados: crecen y ocupan el alto disponible */}
       <div style={s.chatResults}>
-        {chatNote && <div style={chatNote.err ? s.errorMsg : s.okMsg}>{chatNote.text}</div>}
-        {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
-        {answer && <div style={s.answerCard}>{answer}</div>}
-        {parseMsg && <div style={parseMsg.err ? s.errorMsg : s.okMsg}>{parseMsg.text}{parseMsg.skus?.length ? <span style={s.okSkus}> ({parseMsg.skus.join(", ")})</span> : null}</div>}
-        {markMsg && <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>}
-        {!chatNote && !answerErr && !answer && !parseMsg && !markMsg && (
-          <div style={s.chatEmpty}>
-            <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ea0bf" }}>Escribí lo que necesites</b> y el asistente detecta qué querés:</p>
-            <p style={{ margin: "4px 0" }}>💬 <b>Preguntar</b> — “¿dónde está más competitivo VITEL esta semana?”</p>
-            <p style={{ margin: "4px 0" }}>📥 <b>Cargar precios</b> — pegá o subí 📷 una cotización de un proveedor.</p>
-            <p style={{ margin: "4px 0" }}>✅ <b>Marcar</b> — “marcá el S26 ultra y el A56” para armar la cotización.</p>
-          </div>
+        {chatMode === "agente" ? (
+          <>
+            {agentLog.length > 0 && (
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button onClick={resetAgent} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>Nueva conversación</button>
+              </div>
+            )}
+            {agentLog.map((m, i) => (
+              <div key={i} style={
+                m.role === "you" ? s.agYou : m.role === "agent" ? s.agBot : m.role === "tool" ? s.agTool : s.agSys
+              }>{m.text}</div>
+            ))}
+            {agentBusy && <div style={s.agTool}>… pensando</div>}
+            {agentLog.length === 0 && !agentBusy && (
+              <div style={s.chatEmpty}>
+                <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ee0a8" }}>🤖 Agente de órdenes</b> — armá una orden de punta a punta:</p>
+                <p style={{ margin: "4px 0" }}>“El cliente Intalper quiere 20 S26 Ultra 256 y 40 S25 Ultra 256, buscá el mejor proveedor y armá la orden.”</p>
+                <p style={{ margin: "4px 0", color: "#8b94a7" }}>Elige el proveedor más barato por cantidad, arma las líneas, y cuando confirmás genera la factura y los remitos.</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {chatNote && <div style={chatNote.err ? s.errorMsg : s.okMsg}>{chatNote.text}</div>}
+            {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
+            {answer && <div style={s.answerCard}>{answer}</div>}
+            {parseMsg && <div style={parseMsg.err ? s.errorMsg : s.okMsg}>{parseMsg.text}{parseMsg.skus?.length ? <span style={s.okSkus}> ({parseMsg.skus.join(", ")})</span> : null}</div>}
+            {markMsg && <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>}
+            {!chatNote && !answerErr && !answer && !parseMsg && !markMsg && (
+              <div style={s.chatEmpty}>
+                <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ea0bf" }}>Escribí lo que necesites</b> y el asistente detecta qué querés:</p>
+                <p style={{ margin: "4px 0" }}>💬 <b>Preguntar</b> — “¿dónde está más competitivo VITEL esta semana?”</p>
+                <p style={{ margin: "4px 0" }}>📥 <b>Cargar precios</b> — pegá o subí 📷 una cotización de un proveedor.</p>
+                <p style={{ margin: "4px 0" }}>✅ <b>Marcar</b> — “marcá el S26 ultra y el A56” para armar la cotización.</p>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -2031,6 +2247,46 @@ export default function PriceDesk() {
         </section>
       )}
 
+      {/* Modal: confirmación del agente (revisor + resumen) antes de generar */}
+      {pendingAgentCommit && (
+        <div style={s.modalOverlay} onClick={() => setPendingAgentCommit(null)}>
+          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={s.newHead}>{pendingAgentCommit.kind === "invoice" ? "🧾 Revisá antes de generar la FACTURA" : "📦 Revisá antes de generar los REMITOS"}</div>
+            <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 8 }}>
+              Cliente: <b>{pendingAgentCommit.summary.cliente}</b> · Fecha: {pendingAgentCommit.summary.fecha}
+              {pendingAgentCommit.kind === "invoice" && <> · Venta <b style={{ color: "#fbbf24" }}>{money(pendingAgentCommit.summary.venta)}</b> · Costo {money(pendingAgentCommit.summary.costo)} · Margen <b style={{ color: "#4ade80" }}>{money(pendingAgentCommit.summary.margen)}</b></>}
+            </div>
+            <table style={s.invTable}>
+              <thead><tr>
+                <th style={s.invTh}>Cant.</th><th style={{ ...s.invTh, textAlign: "left" }}>Modelo</th><th style={{ ...s.invTh, textAlign: "left" }}>Color</th><th style={{ ...s.invTh, textAlign: "left" }}>Prov.</th>
+                {pendingAgentCommit.kind === "invoice" && <><th style={s.invTh}>Costo</th><th style={s.invTh}>Precio</th></>}
+              </tr></thead>
+              <tbody>
+                {pendingAgentCommit.summary.lineas.map((l, i) => (
+                  <tr key={i}>
+                    <td style={s.invTd}>{l.cantidad}</td>
+                    <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{l.modelo}</td>
+                    <td style={{ ...s.invTd, textAlign: "left" }}>{l.color || "—"}</td>
+                    <td style={{ ...s.invTd, textAlign: "left" }}>{l.proveedor || "—"}</td>
+                    {pendingAgentCommit.kind === "invoice" && <><td style={{ ...s.invTd, color: "#9aa4b2" }}>{money(l.costo)}</td><td style={{ ...s.invTd, color: "#fbbf24" }}>{money(l.precio)}</td></>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {pendingAgentCommit.issues.length > 0 && (
+              <div style={{ marginTop: 10, background: "#2a1f0f", border: "1px solid #5a4a1d", borderRadius: 6, padding: "8px 10px", fontSize: 12, color: "#e6d8b8" }}>
+                <b>⚠ El revisor marcó:</b>
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>{pendingAgentCommit.issues.map((x, i) => <li key={i}>{x}</li>)}</ul>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              <button onClick={() => setPendingAgentCommit(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
+              <button onClick={confirmAgentCommit} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>✓ Confirmar y generar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal: modelos nuevos detectados — aparece sí o sí sobre todo */}
       {pendingNew.length > 0 && (
         <div style={s.modalOverlay} onClick={() => setPendingNew([])}>
@@ -2080,6 +2336,10 @@ const styles = {
   chatBox: { position: "fixed", top: 0, right: 0, height: "100vh", width: 360, boxSizing: "border-box", display: "flex", flexDirection: "column", background: "#0f1420", borderLeft: "1px solid #22304a", padding: 14, zIndex: 40, transition: "transform .2s ease" },
   chatResults: { flex: 1, overflowY: "auto", marginTop: 8, display: "flex", flexDirection: "column", gap: 8 },
   chatEmpty: { fontSize: 12, color: "#6b7385", lineHeight: 1.5, border: "1px dashed #22304a", borderRadius: 6, padding: 12, background: "#0b0e14" },
+  agYou: { alignSelf: "flex-end", maxWidth: "90%", background: "#1d2740", border: "1px solid #2f4166", color: "#dbe6f7", borderRadius: "8px 8px 2px 8px", padding: "6px 9px", fontSize: 12.5, whiteSpace: "pre-wrap" },
+  agBot: { background: "#0f1a12", border: "1px solid #244a2c", color: "#d7ead9", borderRadius: "8px 8px 8px 2px", padding: "7px 10px", fontSize: 12.5, whiteSpace: "pre-wrap", lineHeight: 1.45 },
+  agTool: { fontSize: 10.5, color: "#7c8597", fontStyle: "italic", padding: "0 2px" },
+  agSys: { fontSize: 12, color: "#8ee0a8", background: "#11201400", padding: "2px 2px" },
   chatInputWrap: { flexShrink: 0, paddingTop: 10, borderTop: "1px solid #1c2230", marginTop: 8 },
   chatHead: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, letterSpacing: 1, color: "#6fa8e6", fontWeight: 700, marginBottom: 8 },
   chatCollapse: { background: "transparent", border: "1px solid #22304a", color: "#9aa4b2", borderRadius: 4, cursor: "pointer", padding: "1px 8px", fontSize: 13 },

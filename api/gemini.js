@@ -31,18 +31,28 @@ export default async function handler(req, res) {
     json = false,
     maxTokens = 2048,
     model = "gemini-2.5-flash",
+    contents,   // conversación multi-turno completa (agente / function-calling)
+    tools,      // function declarations
+    toolConfig,
   } = req.body || {};
 
-  const parts = [];
-  for (const im of images) parts.push({ inline_data: { mime_type: im.mimeType, data: im.data } });
-  if (content) parts.push({ text: content });
+  // Si viene `contents` (agente), se usa tal cual; si no, se arma como siempre.
+  let convo = contents;
+  if (!Array.isArray(convo)) {
+    const parts = [];
+    for (const im of images) parts.push({ inline_data: { mime_type: im.mimeType, data: im.data } });
+    if (content) parts.push({ text: content });
+    convo = [{ role: "user", parts }];
+  }
 
   const gBody = {
-    contents: [{ role: "user", parts }],
+    contents: convo,
     generationConfig: { temperature: 0, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
   };
   if (system) gBody.system_instruction = { parts: [{ text: system }] };
   if (json) gBody.generationConfig.responseMimeType = "application/json";
+  if (tools) gBody.tools = tools;
+  if (toolConfig) gBody.tool_config = toolConfig;
 
   try {
     const r = await fetch(
