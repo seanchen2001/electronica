@@ -1153,7 +1153,7 @@ export default function PriceDesk() {
 
   async function submitChat(file = null) {
     const text = chatText.trim();
-    if (chatMode === "agente") { if (text) { setChatText(""); runAgent(text); } return; }
+    if (chatMode === "agente") { if (text || file) { setChatText(""); runAgent(text, file); } return; }
     if (!apiKey.trim()) { setChatNote({ err: true, text: "Cargá la contraseña / API key primero." }); return; }
     if (!text && !file) return;
     setChatNote(null);
@@ -1303,15 +1303,18 @@ export default function PriceDesk() {
     }
     return { ok: false, error: "herramienta desconocida" };
   }
-  async function runAgent(userText) {
+  async function runAgent(userText, file = null) {
     if (!apiKey.trim()) { setAgentLog((l) => [...l, { role: "system", text: "Cargá la contraseña / API key primero." }]); return; }
-    if (!userText.trim()) return;
+    if (!userText.trim() && !file) return;
     setDocType("factura");
     setAgentBusy(true);
-    setAgentLog((l) => [...l, { role: "you", text: userText }]);
+    setAgentLog((l) => [...l, { role: "you", text: (userText || "") + (file ? "  📷 (imagen)" : "") }]);
     const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean) });
     const stateSnapshot = { orden_actual: orderSummaryData() };
-    const contents = [...agentContents.current, { role: "user", parts: [{ text: userText + "\n\nESTADO: " + JSON.stringify(stateSnapshot) }] }];
+    const parts = [];
+    if (file) { try { const img = await fileToData(file); parts.push({ inline_data: { mime_type: img.mimeType, data: img.data } }); } catch { /* ignore */ } }
+    parts.push({ text: (userText || "(mirá la imagen adjunta para contexto)") + "\n\nESTADO: " + JSON.stringify(stateSnapshot) });
+    const contents = [...agentContents.current, { role: "user", parts }];
     try {
       for (let step = 0; step < 8; step++) {
         const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048 });
