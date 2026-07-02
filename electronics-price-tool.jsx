@@ -36,9 +36,10 @@ function buildParseSystem(lines) {
     "You are a price extraction assistant for a phone wholesaler. The user pastes ONE supplier's raw quote (Spanish, messy, with quantities/colors/section headers). Map each model to the closest standard SKU from this EXACT list (category in brackets):\n" +
     lines.join("\n") +
     "\n\nRules:\n- Ignore colors.\n" +
-    "- If a model lists several prices by quantity (a price ladder, e.g. a base price for '150+ PCS' plus cheaper ones for 20/50+ units), take the HIGHEST price (the worst / most conservative — the base price for the smallest quantity).\n- " + DISAMBIG +
+    "- 'price' = the base price = the HIGHEST price (worst / smallest-quantity). This is what goes in 'matched'.\n" +
+    "- If a model lists a QUANTITY LADDER (several prices by pieces, e.g. $630 base, $621 for 20, $615 for 21-49, $611 for 50+), ALSO return the full ladder in 'tiers' as [{\"min\": <min qty for that price>, \"price\": N}], including the base as {\"min\":1,\"price\":<base>}. Ascending by min. If there is a single price, omit that SKU from 'tiers'.\n- " + DISAMBIG +
     "\n- For models that clearly do NOT match any SKU in the list, do NOT force them. Put them under \"new\" with a normalized name in the SAME naming style as the list, a category (one of: Samsung, Motorola LATIN, Motorola EURO), and the price (same highest-price rule).\n" +
-    'Respond ONLY with JSON: {"matched": {"<exact SKU from the list>": price, ...}, "new": [{"name": "...", "cat": "...", "price": N}, ...]}. No markdown, no commentary.'
+    'Respond ONLY with JSON: {"matched": {"<exact SKU>": price, ...}, "tiers": {"<exact SKU>": [{"min":1,"price":N},{"min":20,"price":N}], ...}, "new": [{"name": "...", "cat": "...", "price": N}, ...]}. No markdown, no commentary.'
   );
 }
 
@@ -66,6 +67,7 @@ const CAT_KEY = "desk-extra-catalog-v1";
 const LEDGER_KEY = "desk-ledger-v1";
 const SUPP_KEY = "desk-suppliers-v1";
 const ALIASES_KEY = "desk-aliases-v1";
+const TIERS_KEY = "desk-tiers-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -185,11 +187,20 @@ async function parseSupplierQuote(rawText, apiKey, system, names, images = []) {
   const matchedRaw = parsed.matched && typeof parsed.matched === "object" ? parsed.matched : parsed;
   const matched = {};
   for (const sku of names) { const n = toNum(matchedRaw[sku]); if (n != null) matched[sku] = n; }
+  // escalas por cantidad (tiers) — solo para SKU con más de un escalón
+  const tiersRaw = parsed.tiers && typeof parsed.tiers === "object" ? parsed.tiers : {};
+  const tiers = {};
+  for (const sku of names) {
+    const arr = Array.isArray(tiersRaw[sku]) ? tiersRaw[sku] : null;
+    if (!arr) continue;
+    const clean = arr.map((t) => ({ min: toNum(t?.min) ?? 1, price: toNum(t?.price) })).filter((t) => t.price != null).sort((a, b) => a.min - b.min);
+    if (clean.length > 1) { tiers[sku] = clean; if (matched[sku] == null) matched[sku] = clean[0].price; }
+  }
   const known = new Set(names);
   const newModels = (Array.isArray(parsed.new) ? parsed.new : [])
     .map((m) => ({ name: String(m?.name || "").trim(), cat: m?.cat || "Samsung", price: toNum(m?.price) }))
     .filter((m) => m.name && !known.has(m.name));
-  return { matched, newModels };
+  return { matched, tiers, newModels };
 }
 
 async function matchModels(text, apiKey, system, names, images = []) {
@@ -229,6 +240,7 @@ export default function PriceDesk() {
   const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const [pendingNew, setPendingNew] = useState([]); // sugerencias de modelos nuevos a confirmar
   const [prices, setPrices] = useState(() => load(PRICES_KEY, {}));
+  const [tiers, setTiers] = useState(() => load(TIERS_KEY, {})); // escalas por cantidad: tiers[sku][sup] = [{min,price}]
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
   const [snapshots, setSnapshots] = useState(() => load(SNAP_KEY, []));
@@ -305,6 +317,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
+  useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -353,6 +366,7 @@ export default function PriceDesk() {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
           setTimes((t) => resolveObj(d.times, t, "times"));
           setLista((l) => resolveObj(d.lista, l, "lista"));
+          setTiers((t) => resolveObj(d.tiers, t, "tiers"));
         }
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
@@ -383,6 +397,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("ledger", ledger); }, [ledger]);
   useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
+  useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -445,15 +460,26 @@ export default function PriceDesk() {
     setParseMsg(null);
     try {
       const images = file ? [await fileToData(file)] : [];
-      const { matched, newModels } = await parseSupplierQuote(text, apiKey.trim(), parseSystem, catalogNames, images);
+      const { matched, tiers: parsedTiers, newModels } = await parseSupplierQuote(text, apiKey.trim(), parseSystem, catalogNames, images);
       const keys = Object.keys(matched);
       setPrices((prev) => {
         const next = { ...prev };
         for (const sku of keys) next[sku] = { ...(next[sku] || {}), [supplier]: matched[sku] };
         return next;
       });
+      // escalas por cantidad: guardar las que vinieron, limpiar las de este proveedor que ya no aplican
+      setTiers((prev) => {
+        const next = { ...prev };
+        for (const sku of keys) {
+          const row = { ...(next[sku] || {}) };
+          if (parsedTiers[sku]) row[supplier] = parsedTiers[sku]; else delete row[supplier];
+          if (Object.keys(row).length) next[sku] = row; else delete next[sku];
+        }
+        return next;
+      });
       stampTimes(keys.map((sku) => [sku, supplier, false]));
       if (textArg == null) setRawText("");
+      const tierCount = keys.filter((sku) => parsedTiers[sku]).length;
       // modelos nuevos → a la cola de confirmación (con el proveedor de origen)
       const adds = newModels
         .filter((m) => !pendingNew.some((p) => p.name === m.name))
@@ -461,7 +487,7 @@ export default function PriceDesk() {
       if (adds.length) setPendingNew((p) => [...p, ...adds]);
       setParseMsg({
         err: false,
-        text: `Cargué ${keys.length} SKU${keys.length === 1 ? "" : "s"} para ${supplier}${adds.length ? ` · ${adds.length} modelo(s) nuevo(s) → revisalos en el modal` : ""}.`,
+        text: `Cargué ${keys.length} SKU${keys.length === 1 ? "" : "s"} para ${supplier}${tierCount ? ` · ${tierCount} con escala x cantidad` : ""}${adds.length ? ` · ${adds.length} modelo(s) nuevo(s) → revisalos en el modal` : ""}.`,
         skus: keys,
       });
     } catch (e) {
@@ -683,12 +709,24 @@ export default function PriceDesk() {
     for (const [sp, v] of Object.entries(row)) if (typeof v === "number" && v < bv) { bv = v; best = sp; }
     return best;
   }
+  // costo del proveedor para una cantidad, usando la escala (tier) si existe; si no, el precio base
+  function costForQty(sku, supplier, qty = 1) {
+    const t = tiers[sku]?.[supplier];
+    if (Array.isArray(t) && t.length) {
+      const sorted = [...t].sort((a, b) => a.min - b.min);
+      let p = sorted[0].price;
+      for (const x of sorted) if (qty >= x.min) p = x.price;
+      return p;
+    }
+    return prices[sku]?.[supplier] ?? 0;
+  }
+  function hasTiers(sku, supplier) { return Array.isArray(tiers[sku]?.[supplier]) && tiers[sku][supplier].length > 1; }
   // una línea de orden: qty, color, spec (EURO/LATIN), proveedor (de dónde se compra) + su costo, y price (lo que se factura al cliente)
   function specForCat(cat) { return cat === "Motorola LATIN" ? "LATIN" : cat === "Motorola EURO" ? "EURO" : ""; }
   function newOrderLine(sku) {
     const sup = cheapestSupplier(sku);
     const cat = catalog.find((c) => c.name === sku)?.cat || "";
-    return { sku, cat, qty: 1, color: "", spec: specForCat(cat), supplier: sup, cost: prices[sku]?.[sup] ?? 0, price: listaFor(sku) ?? aggBySku[sku]?.client ?? 0 };
+    return { sku, cat, qty: 1, color: "", spec: specForCat(cat), supplier: sup, cost: costForQty(sku, sup, 1), price: listaFor(sku) ?? aggBySku[sku]?.client ?? 0 };
   }
   // splitear una línea en varios colores: duplica la fila (qty 1, color en blanco para llenar)
   function splitItem(idx) {
@@ -708,17 +746,22 @@ export default function PriceDesk() {
   function setItem(idx, k, v) {
     setOrder((p) => ({
       ...p,
-      items: p.items.map((it, i) => i === idx
-        ? { ...it, [k]: NUMERIC_ITEM.has(k) ? (parseFloat(String(v).replace(/[^0-9.]/g, "")) || 0) : v }
-        : it),
+      items: p.items.map((it, i) => {
+        if (i !== idx) return it;
+        const nv = NUMERIC_ITEM.has(k) ? (parseFloat(String(v).replace(/[^0-9.]/g, "")) || 0) : v;
+        const next = { ...it, [k]: nv };
+        // si el proveedor tiene escala por cantidad, el costo sigue a la cantidad
+        if (k === "qty" && hasTiers(it.sku, it.supplier)) next.cost = costForQty(it.sku, it.supplier, nv);
+        return next;
+      }),
     }));
   }
-  // cambiar de proveedor: setea proveedor y trae su costo (el "precio alt")
+  // cambiar de proveedor: setea proveedor y trae su costo según la cantidad (escala o precio base)
   function setItemSupplier(idx, supplier) {
     setOrder((p) => ({
       ...p,
       items: p.items.map((it, i) => i === idx
-        ? { ...it, supplier, cost: prices[it.sku]?.[supplier] ?? it.cost ?? 0 }
+        ? { ...it, supplier, cost: costForQty(it.sku, supplier, it.qty) || it.cost || 0 }
         : it),
     }));
   }
@@ -1653,7 +1696,10 @@ export default function PriceDesk() {
                       {supOpts.map((sp) => <option key={sp} value={sp}>{sp}{typeof prices[it.sku]?.[sp] === "number" ? ` · $${Math.round(prices[it.sku][sp])}` : ""}</option>)}
                     </select>
                   </td>
-                  <td style={s.invTd}><input value={it.cost ?? 0} onChange={(e) => setItem(idx, "cost", e.target.value)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a", color: "#9aa4b2" }} /></td>
+                  <td style={s.invTd}>
+                    <input value={it.cost ?? 0} onChange={(e) => setItem(idx, "cost", e.target.value)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a", color: "#9aa4b2" }} />
+                    {hasTiers(it.sku, it.supplier) && <span title={`Escala x cantidad (${it.supplier}):\n` + tiers[it.sku][it.supplier].map((t) => `${t.min}+ pzs → $${t.price}`).join("\n")} style={{ color: "#c084fc", fontSize: 10, marginLeft: 3, cursor: "help" }}>⇙</span>}
+                  </td>
                   {docType === "factura" && <td style={s.invTd}><input value={it.price} onChange={(e) => setItem(idx, "price", e.target.value)} style={{ ...s.cellInput, width: 70, border: "1px solid #232a3a" }} /></td>}
                   {docType === "factura" && <td style={{ ...s.invTd, color: "#fbbf24" }}>{money((Number(it.qty) || 0) * (Number(it.price) || 0))}</td>}
                   <td style={s.invTd}><span style={s.chipX} onClick={() => removeItem(idx)}>×</span></td>
