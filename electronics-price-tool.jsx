@@ -1258,13 +1258,21 @@ export default function PriceDesk() {
     } catch { /* el crítico es best-effort */ }
     return { summary, issues };
   }
+  // resuelve un nombre aproximado al SKU EXACTO del catálogo (tolera / vs +, GB, espacios)
+  function normSku(x) { return String(x || "").toLowerCase().replace(/gb/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " "); }
+  function resolveSku(name) {
+    if (catalogNames.includes(name)) return name;
+    const n = normSku(name);
+    const hit = catalog.find((c) => normSku(c.name) === n);
+    return hit ? hit.name : null;
+  }
   async function runTool(name, args) {
-    if (name === "best_supplier") return bestSuppliers(args.sku, args.qty || 1);
+    if (name === "best_supplier") { const sku = resolveSku(args.sku); return sku ? bestSuppliers(sku, args.qty || 1) : { error: `No encontré "${args.sku}" en el catálogo.` }; }
     if (name === "negotiation_report") return negotiationReport(args.scope || "order");
     if (name === "order_summary") return orderSummaryData();
     if (name === "add_order_line") {
-      const sku = args.sku;
-      if (!catalogNames.includes(sku)) return { ok: false, error: `SKU desconocido: ${sku}` };
+      const sku = resolveSku(args.sku);
+      if (!sku) return { ok: false, error: `SKU desconocido: ${args.sku}` };
       const sup = args.supplier || cheapestSupplier(sku);
       const qty = Number(args.qty) || 1;
       agentSetOrder((o) => {
@@ -1292,14 +1300,14 @@ export default function PriceDesk() {
     if (name === "quote_analysis") {
       const r1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
       const items = (args.items || []).map((it) => {
-        const sku = it.sku, qty = Number(it.qty) || 1;
-        const known = catalogNames.includes(sku);
+        const sku = resolveSku(it.sku), qty = Number(it.qty) || 1;
+        const known = !!sku;
         const bs = known ? bestSuppliers(sku, qty) : null;
         const costo = bs?.mejor?.costo ?? null;
         const lista = known ? listaFor(sku) : null; // Mín + margen%
         const suger = it.clientPrice != null ? Number(it.clientPrice) : null;
         return {
-          modelo: sku, cantidad: qty, en_catalogo: known,
+          modelo: sku || it.sku, cantidad: qty, en_catalogo: known,
           costo, mejor_proveedor: bs?.mejor?.proveedor ?? null,
           precio_lista: lista,
           margen_lista_pct: costo && lista ? r1(((lista - costo) / costo) * 100) : null,
