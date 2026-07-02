@@ -311,6 +311,7 @@ export default function PriceDesk() {
   // ---- agente ----
   const [agentLog, setAgentLog] = useState([]); // [{role, text}]
   const [agentBusy, setAgentBusy] = useState(false);
+  const [showSteps, setShowSteps] = useState(false); // ver el proceso (herramientas) del agente
   const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
   const agentContents = useRef([]); // conversación multi-turno del agente
   const orderRef = useRef(order); // espejo síncrono de la orden para los handlers del agente
@@ -1347,7 +1348,8 @@ export default function PriceDesk() {
         contents.push(cand);
         const calls = (cand.parts || []).filter((p) => p.functionCall).map((p) => p.functionCall);
         const textOut = (cand.parts || []).filter((p) => p.text).map((p) => p.text).join("").trim();
-        if (textOut) setAgentLog((l) => [...l, { role: "agent", text: textOut }]);
+        // solo mostramos la respuesta FINAL (turno sin herramientas); la narración intermedia se oculta
+        if (textOut && !calls.length) setAgentLog((l) => [...l, { role: "agent", text: textOut }]);
         if (!calls.length) break;
         const responses = [];
         let paused = false;
@@ -1443,16 +1445,19 @@ export default function PriceDesk() {
         {chatMode === "agente" ? (
           <>
             {agentLog.length > 0 && (
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <label style={{ fontSize: 10.5, color: "#6b7385", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input type="checkbox" checked={showSteps} onChange={(e) => setShowSteps(e.target.checked)} /> ver pasos
+                </label>
                 <button onClick={resetAgent} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>Nueva conversación</button>
               </div>
             )}
-            {agentLog.map((m, i) => (
+            {agentLog.filter((m) => showSteps || m.role !== "tool").map((m, i) => (
               <div key={i} style={
                 m.role === "you" ? s.agYou : m.role === "agent" ? s.agBot : m.role === "tool" ? s.agTool : s.agSys
               }>{m.text}</div>
             ))}
-            {agentBusy && <div style={s.agTool}>… pensando</div>}
+            {agentBusy && <div style={s.agTool}>… trabajando</div>}
             {agentLog.length === 0 && !agentBusy && (
               <div style={s.chatEmpty}>
                 <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ee0a8" }}>🤖 Agente de órdenes</b> — armá una orden de punta a punta:</p>
