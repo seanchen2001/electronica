@@ -328,9 +328,10 @@ export default function PriceDesk() {
   const [askMode, setAskMode] = useState("ask"); // "ask" | "mark" (mobile)
   // chatbox unificado (desktop): un solo input, el AI descubre el intent (o selector manual)
   const [chatText, setChatText] = useState("");
-  const [chatMode, setChatMode] = useState("auto"); // "auto" | "ask" | "parse" | "mark"
+  const [chatMode, setChatMode] = useState("auto"); // "auto" | "agente" | "ask" | "parse" | "mark"
   const [chatOpen, setChatOpen] = useState(true);
   const [chatNote, setChatNote] = useState(null); // {err, text} — feedback del ruteo de intent
+  const [chatImage, setChatImage] = useState(null); // imagen adjunta al mensaje (File), con preview
   const [query, setQuery] = useState("");
   const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState(null);
@@ -1151,11 +1152,13 @@ export default function PriceDesk() {
     return { intent: ["ask", "parse", "mark"].includes(p.intent) ? p.intent : "ask", supplier: p.supplier || "" };
   }
 
-  async function submitChat(file = null) {
+  async function submitChat(explicitFile = null) {
     const text = chatText.trim();
-    if (chatMode === "agente") { if (text || file) { setChatText(""); runAgent(text, file); } return; }
+    const file = explicitFile || chatImage; // usa la imagen adjunta si no se pasó una explícita
+    if (chatMode === "agente") { if (text || file) { setChatText(""); setChatImage(null); runAgent(text, file); } return; }
     if (!apiKey.trim()) { setChatNote({ err: true, text: "Cargá la contraseña / API key primero." }); return; }
     if (!text && !file) return;
+    setChatImage(null);
     setChatNote(null);
     let mode = chatMode;
     let supplier = parseSupplier;
@@ -1185,7 +1188,7 @@ export default function PriceDesk() {
     for (const it of e.clipboardData?.items || []) {
       if (it.type.startsWith("image/")) {
         const f = it.getAsFile();
-        if (f) { e.preventDefault(); submitChat(f); return; }
+        if (f) { e.preventDefault(); setChatImage(f); return; } // adjunta (no envía); agregás texto y mandás
       }
     }
   }
@@ -1284,6 +1287,29 @@ export default function PriceDesk() {
       if (args.date) agentSetOrder((o) => ({ ...o, date: args.date }));
       if (args.marginPct != null) setMargin(String(args.marginPct));
       return { ok: true };
+    }
+    if (name === "quote_analysis") {
+      const r1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
+      const items = (args.items || []).map((it) => {
+        const sku = it.sku, qty = Number(it.qty) || 1;
+        const known = catalogNames.includes(sku);
+        const bs = known ? bestSuppliers(sku, qty) : null;
+        const costo = bs?.mejor?.costo ?? null;
+        const lista = known ? listaFor(sku) : null; // Mín + margen%
+        const suger = it.clientPrice != null ? Number(it.clientPrice) : null;
+        return {
+          modelo: sku, cantidad: qty, en_catalogo: known,
+          costo, mejor_proveedor: bs?.mejor?.proveedor ?? null,
+          precio_lista: lista,
+          margen_lista_pct: costo && lista ? r1(((lista - costo) / costo) * 100) : null,
+          precio_sugerido_cliente: suger,
+          margen_sugerido_pct: costo && suger ? r1(((suger - costo) / costo) * 100) : null,
+          ganancia_sugerida_unit: costo && suger ? r1(suger - costo) : null,
+          podemos_igualar: suger != null && costo != null ? suger >= costo : null,
+          por_debajo_costo: suger != null && costo != null ? suger < costo : false,
+        };
+      });
+      return { items, margin_pct_actual: marginNum, nota: "margen_%_ es sobre el costo (igual que el MARGIN % de la app)." };
     }
     if (name === "build_quote") {
       if (args.source === "client" || args.source === "lista") changeSource(args.source);
@@ -1461,16 +1487,23 @@ export default function PriceDesk() {
           onPaste={onChatPaste} rows={4}
           placeholder="Escribí una pregunta, pegá una cotización o pedí marcar modelos… (Enter envía)"
           style={s.chatInput} />
+        {chatImage && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: "#9aa4b2" }}>
+            <img alt="adjunta" src={URL.createObjectURL(chatImage)} style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, border: "1px solid #2a3346" }} />
+            <span>imagen adjunta</span>
+            <span style={s.chipX} onClick={() => setChatImage(null)}>×</span>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-          <label style={{ ...s.imgBtn, cursor: busyChat ? "default" : "pointer" }} title="Subir screenshot (cotización u OCR)">📷
+          <label style={{ ...s.imgBtn, cursor: busyChat ? "default" : "pointer" }} title="Adjuntar screenshot (podés agregarle texto antes de enviar)">📷
             <input type="file" accept="image/*" disabled={busyChat} style={{ display: "none" }}
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) submitChat(f); e.target.value = ""; }} />
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) setChatImage(f); e.target.value = ""; }} />
           </label>
           <button onClick={() => submitChat()} disabled={busyChat} style={{ ...s.askBtn, flex: 1, ...(busyChat ? s.busy : {}) }}>
             {busyChat ? "…" : "Enviar"}
           </button>
         </div>
-        <div style={s.askHint}>Enter envía · Shift+Enter salto de línea.</div>
+        <div style={s.askHint}>Enter envía · Shift+Enter salto de línea · 📷/Ctrl+V adjunta.</div>
       </div>
     </aside>
   );
