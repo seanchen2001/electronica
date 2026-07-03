@@ -319,6 +319,8 @@ export default function PriceDesk() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [showSteps, setShowSteps] = useState(false); // ver el proceso (herramientas) del agente
   const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
+  const [pendingPriceLoad, setPendingPriceLoad] = useState(null); // {supplier, rows, newModels} para confirmar carga de precios
+  const lastQuoteRef = useRef({ text: "", images: [] }); // último mensaje (para load_prices)
   const agentContents = useRef([]); // conversación multi-turno del agente
   const orderRef = useRef(order); // espejo síncrono de la orden para los handlers del agente
   const chatScrollRef = useRef(null); // auto-scroll del chat
@@ -1431,6 +1433,22 @@ export default function PriceDesk() {
       setPendingAgentCommit({ kind: "remitos", summary, issues });
       return { status: "needs_confirmation", issues, mensaje: "Esperando confirmación del usuario para generar los remitos por proveedor." };
     }
+    if (name === "load_prices") {
+      const supplier = supplierList.find((s) => s.toLowerCase() === String(args.supplier || "").toLowerCase()) || args.supplier;
+      if (!supplierList.includes(supplier)) return { ok: false, error: `Proveedor desconocido: ${args.supplier}. Disponibles: ${supplierList.join(", ")}.` };
+      const q = lastQuoteRef.current || {};
+      if (!q.text && !(q.images || []).length) return { ok: false, error: "No tengo la cotización (texto o imagen) en este mensaje. Pedile que la mande de nuevo." };
+      const { matched, tiers: pt, newModels } = await parseSupplierQuote(q.text || "", apiKey.trim(), parseSystem, catalogNames, q.images || []);
+      const rows = Object.keys(matched).map((sku) => {
+        const oldP = prices[sku]?.[supplier];
+        const newP = matched[sku];
+        const pct = typeof oldP === "number" && oldP ? Math.round(((newP - oldP) / oldP) * 1000) / 10 : null;
+        return { sku, oldPrice: oldP ?? null, newPrice: newP, pct, tiers: pt[sku] || null, big: pct != null && Math.abs(pct) > 15 };
+      });
+      if (!rows.length && !newModels.length) return { ok: false, error: "No pude extraer precios de la cotización." };
+      setPendingPriceLoad({ supplier, rows, newModels });
+      return { status: "needs_confirmation", supplier, cargados: rows.length, con_variacion_grande: rows.filter((r) => r.big).map((r) => `${r.sku} (${r.pct}%)`), nuevos: newModels.map((m) => m.name), mensaje: "Le mostré la previsualización al usuario para que confirme antes de guardar." };
+    }
     return { ok: false, error: "herramienta desconocida" };
   }
   async function runAgent(userText, file = null) {
@@ -1442,7 +1460,9 @@ export default function PriceDesk() {
     const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean) });
     const stateSnapshot = { orden_actual: orderSummaryData() };
     const parts = [];
-    if (file) { try { const img = await fileToData(file); parts.push({ inline_data: { mime_type: img.mimeType, data: img.data } }); } catch { /* ignore */ } }
+    const quoteImages = [];
+    if (file) { try { const img = await fileToData(file); quoteImages.push(img); parts.push({ inline_data: { mime_type: img.mimeType, data: img.data } }); } catch { /* ignore */ } }
+    lastQuoteRef.current = { text: userText || "", images: quoteImages }; // para load_prices
     parts.push({ text: (userText || "(mirá la imagen adjunta para contexto)") + "\n\nESTADO: " + JSON.stringify(stateSnapshot) });
     const contents = [...agentContents.current, { role: "user", parts }];
     try {
@@ -1482,7 +1502,21 @@ export default function PriceDesk() {
       else if (c.kind === "remitos") { await downloadSupplierRemitos(); setAgentLog((l) => [...l, { role: "system", text: "✅ Remitos por proveedor generados." }]); }
     } catch (e) { setAgentLog((l) => [...l, { role: "system", text: "Error al generar: " + (e?.message || e) }]); }
   }
-  function resetAgent() { agentContents.current = []; setAgentLog([]); setPendingAgentCommit(null); }
+  function confirmPriceLoad() {
+    const p = pendingPriceLoad; setPendingPriceLoad(null);
+    if (!p) return;
+    setPrices((prev) => { const next = { ...prev }; for (const r of p.rows) next[r.sku] = { ...(next[r.sku] || {}), [p.supplier]: r.newPrice }; return next; });
+    setTiers((prev) => {
+      const next = { ...prev };
+      for (const r of p.rows) { const row = { ...(next[r.sku] || {}) }; if (r.tiers) row[p.supplier] = r.tiers; else delete row[p.supplier]; if (Object.keys(row).length) next[r.sku] = row; else delete next[r.sku]; }
+      return next;
+    });
+    stampTimes(p.rows.map((r) => [r.sku, p.supplier, false]));
+    logPrices(p.rows.map((r) => ({ sku: r.sku, supplier: p.supplier, price: r.newPrice })));
+    if (p.newModels?.length) setPendingNew((pn) => [...pn, ...p.newModels.filter((m) => !pn.some((x) => x.name === m.name)).map((m) => ({ ...m, supplier: p.supplier }))]);
+    setAgentLog((l) => [...l, { role: "system", text: `✅ Cargué ${p.rows.length} precio(s) para ${p.supplier}${p.newModels?.length ? ` · ${p.newModels.length} modelo(s) nuevo(s) → confirmá en el modal` : ""}.` }]);
+  }
+  function resetAgent() { agentContents.current = []; setAgentLog([]); setPendingAgentCommit(null); setPendingPriceLoad(null); }
 
   const s = styles;
   let lastCat = null;
@@ -2429,6 +2463,39 @@ export default function PriceDesk() {
       {!isMobile && chatBox}
       {!isMobile && !chatOpen && (
         <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬 Asistente</button>
+      )}
+
+      {/* Modal: confirmar carga de precios del agente */}
+      {pendingPriceLoad && (
+        <div style={s.modalOverlay} onClick={() => setPendingPriceLoad(null)}>
+          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={s.newHead}>💲 Cargar precios de <b>{pendingPriceLoad.supplier}</b> — revisá antes de guardar</div>
+            <table style={s.invTable}>
+              <thead><tr>
+                <th style={{ ...s.invTh, textAlign: "left" }}>Modelo</th>
+                <th style={s.invTh}>Actual</th><th style={s.invTh}>Nuevo</th><th style={s.invTh}>Δ%</th><th style={{ ...s.invTh, textAlign: "left" }}>Escala</th>
+              </tr></thead>
+              <tbody>
+                {pendingPriceLoad.rows.map((r) => (
+                  <tr key={r.sku} style={r.big ? { background: "#2a1f0f" } : undefined}>
+                    <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{r.big ? "⚠ " : ""}{r.sku}</td>
+                    <td style={{ ...s.invTd, color: "#9aa4b2" }}>{r.oldPrice != null ? money(r.oldPrice) : "—"}</td>
+                    <td style={{ ...s.invTd, color: "#fbbf24" }}>{money(r.newPrice)}</td>
+                    <td style={{ ...s.invTd, color: r.big ? "#f87171" : "#8b94a7" }}>{r.pct == null ? "nuevo" : `${r.pct > 0 ? "+" : ""}${r.pct}%`}</td>
+                    <td style={{ ...s.invTd, textAlign: "left", color: "#c084fc", fontSize: 11 }}>{r.tiers ? r.tiers.map((t) => `${t.min}+→$${t.price}`).join(" · ") : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {pendingPriceLoad.newModels?.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#e6d8b8" }}>🆕 Modelos fuera del catálogo (se confirman aparte): {pendingPriceLoad.newModels.map((m) => m.name).join(", ")}</div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              <button onClick={() => setPendingPriceLoad(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
+              <button onClick={confirmPriceLoad} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>✓ Confirmar y guardar</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal: confirmación del agente (revisor + resumen) antes de generar */}
