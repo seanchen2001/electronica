@@ -707,9 +707,10 @@ export default function PriceDesk() {
       .join("\n\n");
   }, [quoteGroups, quoteSource, quoteOverrides, lista, aggBySku]);
 
-  // texto de cotización WhatsApp para una lista de SKUs (agrupado por categoría del catálogo)
-  function whatsappQuoteText(skus, source = "lista") {
-    const priceOf = (sku) => (source === "lista" ? listaFor(sku) : aggBySku[sku]?.client);
+  // texto de cotización WhatsApp para una lista de SKUs (agrupado por categoría del catálogo).
+  // priceMap[sku] fija el precio por modelo; si no, usa lista (o client).
+  function whatsappQuoteText(skus, source = "lista", priceMap = null) {
+    const priceOf = (sku) => (priceMap && priceMap[sku] != null ? priceMap[sku] : source === "lista" ? listaFor(sku) : aggBySku[sku]?.client);
     const set = new Set(skus);
     const groups = []; let cur = null;
     for (const { name, cat } of catalog) {
@@ -1435,14 +1436,14 @@ export default function PriceDesk() {
       return { items, margin_pct_actual: marginNum, nota: "margen_%_ es sobre el costo (igual que el MARGIN % de la app)." };
     }
     if (name === "build_quote") {
-      const source = args.source === "client" ? "client" : "lista";
-      let skus;
-      if (Array.isArray(args.models) && args.models.length) skus = (await Promise.all(args.models.map((m) => resolveSkuSmart(m)))).filter(Boolean);
-      else skus = [...new Set(orderRef.current.items.map((i) => i.sku))];
+      const skus = []; const priceMap = {};
+      for (const it of args.items || []) {
+        const sku = await resolveSkuSmart(it.model); if (!sku) continue;
+        skus.push(sku); if (it.price != null) priceMap[sku] = Number(it.price);
+      }
       if (!skus.length) return { ok: false, error: "No hay modelos para cotizar." };
-      changeSource(source);
-      setSelected(Object.fromEntries(skus.map((s) => [s, true])));
-      return { ok: true, precio: source, texto_whatsapp: whatsappQuoteText(skus, source), nota: "Pasale este texto al usuario para copiar a WhatsApp." };
+      setSelected(Object.fromEntries(skus.map((s) => [s, true]))); // marca en la Mesa (NO toca la orden)
+      return { ok: true, texto_whatsapp: whatsappQuoteText(skus, "lista", priceMap), nota: "Mostrale este texto TAL CUAL al usuario para copiar a WhatsApp. No toqués la orden." };
     }
     if (name === "generate_invoice") {
       setDocType("factura");
