@@ -449,14 +449,14 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("drafts", drafts); }, [drafts]);
   // auto-guardar el pedido activo (si tiene items) en la lista de pendientes
   useEffect(() => {
-    if (!activeId || !order.items.length) return;
+    if (!activeId || !order.items.length || editingTs) return; // al editar una factura vieja NO tocamos los pedidos pendientes
     setDrafts((ds) => {
       const entry = { id: activeId, order, clientId: orderClientId, shipId: orderShipId, ts: Date.now() };
       const i = ds.findIndex((x) => x.id === activeId);
       if (i >= 0) { const n = [...ds]; n[i] = entry; return n; }
       return [entry, ...ds];
     });
-  }, [order, orderClientId, orderShipId, activeId]);
+  }, [order, orderClientId, orderShipId, activeId, editingTs]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -886,6 +886,7 @@ export default function PriceDesk() {
     if (editingTs) {
       setInvoiceHistory((h) => h.map((x) => (x.ts === editingTs ? { ...rec, ts: editingTs } : x)));
       setEditingTs(null);
+      resetOrder(); // cerrar el editor de edición; no dejar la factura editada como pedido pendiente
     } else {
       setInvoiceHistory((h) => [{ ...rec, ts: Date.now() }, ...h].slice(0, 1000));
       if (docType === "factura") {
@@ -893,6 +894,12 @@ export default function PriceDesk() {
       }
     }
     return true;
+  }
+  // Guardar los cambios de una factura editada, sin regenerar el PDF (commit + cierra el editor).
+  function saveEditChanges() {
+    if (commitOrderToHistory()) {
+      alert("Cambios guardados. Se actualizó la factura, el PnL y las Cuentas.");
+    }
   }
   // Registrar una operación pasada sin PDF (backfill de PnL / cuentas).
   function registerPastOperation() {
@@ -1003,8 +1010,7 @@ export default function PriceDesk() {
     setOrderClientId(rec.clientId || "");
     setOrderShipId(rec.shipId || "");
     setDocType(rec.type === "remito" ? "remito" : "factura");
-    setEditingTs(rec.ts);
-    setView("ordenes");
+    setEditingTs(rec.ts); // abre el editor como modal flotante sobre el Historial (no cambia de pestaña)
   }
   // Volver a una orden nueva (limpia el modo edición).
   function resetOrder() {
@@ -1999,10 +2005,13 @@ export default function PriceDesk() {
       </div>
       )}
 
-      {view === "ordenes" && (
-      <section style={s.section}>
-        <div style={s.sectionTitle}>ÓRDENES — Factura / Remito</div>
-        {/* pedidos pendientes */}
+      {/* Órdenes: inline en su pestaña; cuando editás una factura vieja, flota como modal sobre el Historial (aislado de los pedidos pendientes). */}
+      {(view === "ordenes" || editingTs) && (
+      <div style={editingTs ? s.editOverlay : { display: "contents" }}>
+      <section style={editingTs ? s.editCard : s.section}>
+        <div style={s.sectionTitle}>{editingTs ? `EDITAR FACTURA #${order.invoiceNo}` : "ÓRDENES — Factura / Remito"}</div>
+        {/* pedidos pendientes (solo al armar órdenes nuevas, no al editar una factura) */}
+        {!editingTs && (
         <div style={s.acctTabs}>
           <span style={{ fontSize: 10.5, color: "#6b7385", alignSelf: "center", marginRight: 2 }}>PEDIDOS:</span>
           {drafts.map((d) => {
@@ -2020,10 +2029,12 @@ export default function PriceDesk() {
           })}
           <button onClick={resetOrder} style={{ ...s.miniBtn }}>+ Nuevo pedido</button>
         </div>
+        )}
         {editingTs && (
           <div style={s.editBanner}>
-            ✏️ Editando la factura <b>#{order.invoiceNo}</b> — al guardar se actualiza esa misma (recalcula cuentas y PnL).
-            <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 8 }}>Cancelar / Nueva orden</button>
+            ✏️ Estás editando una factura ya generada — al guardar se actualiza esa misma (recalcula cuentas y PnL). No afecta tus pedidos pendientes.
+            <span style={{ flex: 1 }} />
+            <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 8 }}>✕ Cerrar sin guardar</button>
           </div>
         )}
         <div style={s.planTabs}>
@@ -2174,24 +2185,38 @@ export default function PriceDesk() {
         <div style={s.invFoot}>
           <span>Total piezas: <b>{orderPiezas}</b>{docType === "factura" && <> · Subtotal: <b style={{ color: "#fbbf24" }}>{money(orderSubtotal)}</b> · Costo: <b style={{ color: "#9aa4b2" }}>{money(orderCost)}</b> · Margen: <b style={{ color: "#4ade80" }}>{money(orderSubtotal - orderCost)}</b></>}</span>
           <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-            {(editingTs || order.items.length > 0) && <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Nueva orden</button>}
-            {docType === "factura" && !editingTs && order.items.length > 0 && (
-              <button onClick={registerPastOperation} title="Guarda la operación en PnL y Cuentas sin generar PDF (para operaciones pasadas)" style={{ ...s.toolBtn, marginLeft: 0 }}>Registrar sin PDF</button>
+            {editingTs ? (
+              // ---- editando una factura ya generada ----
+              order.items.length > 0 ? (
+                <>
+                  <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>✕ Cancelar</button>
+                  <button onClick={downloadDoc} disabled={pdfBusy} title="Guarda los cambios y descarga la factura actualizada" style={{ ...s.toolBtn, marginLeft: 0 }}>{pdfBusy ? "Generando…" : "⬇ Guardar + PDF"}</button>
+                  <button onClick={saveEditChanges} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>💾 Guardar cambios (factura #{order.invoiceNo})</button>
+                </>
+              ) : <span style={s.askHint}>Agregá al menos un item.</span>
+            ) : (
+              // ---- armando una orden nueva / pendiente ----
+              <>
+                {order.items.length > 0 && <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Nueva orden</button>}
+                {docType === "factura" && order.items.length > 0 && (
+                  <button onClick={registerPastOperation} title="Guarda la operación en PnL y Cuentas sin generar PDF (para operaciones pasadas)" style={{ ...s.toolBtn, marginLeft: 0 }}>Registrar sin PDF</button>
+                )}
+                {order.items.length > 0
+                  ? (docType === "factura"
+                      ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                          {pdfBusy ? "Generando…" : "⬇ Descargar Factura PDF"}
+                        </button>
+                      : <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un archivo por proveedor (sin precios ni cliente, con dirección de entrega)"
+                          style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
+                          {pdfBusy ? "Generando…" : `⬇ Descargar Remitos por proveedor (${remitoGroups.length})`}
+                        </button>)
+                  : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
+              </>
             )}
-            {order.items.length > 0
-              ? (docType === "factura"
-                  ? <button onClick={downloadDoc} disabled={pdfBusy} style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
-                      {pdfBusy ? "Generando…" : editingTs ? `💾 Guardar cambios (factura #${order.invoiceNo})` : "⬇ Descargar Factura PDF"}
-                    </button>
-                  : <button onClick={downloadSupplierRemitos} disabled={pdfBusy} title="Un archivo por proveedor (sin precios ni cliente, con dirección de entrega)"
-                      style={{ ...s.pdfBtn, ...(pdfBusy ? s.busy : {}), border: "none", cursor: pdfBusy ? "default" : "pointer" }}>
-                      {pdfBusy ? "Generando…" : `⬇ Descargar Remitos por proveedor (${remitoGroups.length})`}
-                    </button>)
-              : <span style={s.askHint}>Agregá al menos un item para generar (cliente y envío son opcionales).</span>}
           </span>
         </div>
       </section>
-
+      </div>
       )}
 
       {view === "clientes" && (
@@ -2716,6 +2741,9 @@ const styles = {
   selHint: { fontSize: 10, color: "#525a6b", marginTop: 2 },
   newWrap: { marginTop: 10, background: "#11151f", border: "1px solid #244068", borderRadius: 6, padding: 10 },
   modalOverlay: { position: "fixed", inset: 0, background: "rgba(3,6,12,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "8vh 16px", zIndex: 1000 },
+  // edición de una factura vieja: la sección de Órdenes flota como modal sobre el Historial
+  editOverlay: { position: "fixed", inset: 0, background: "rgba(3,6,12,0.78)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "4vh 16px", zIndex: 1000, overflowY: "auto" },
+  editCard: { background: "#0d1119", border: "1px solid #3a5a1d", borderRadius: 10, padding: 18, width: "min(1080px, 97vw)", marginBottom: 20, boxShadow: "0 24px 70px rgba(0,0,0,0.6)" },
   modalCard: { background: "#0f1420", border: "1px solid #2a4a75", borderRadius: 8, padding: 16, width: "min(720px, 96vw)", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" },
   newHead: { fontSize: 11.5, color: "#6fa8e6", fontWeight: 600, marginBottom: 8 },
   newRow: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" },
