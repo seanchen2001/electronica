@@ -1287,7 +1287,7 @@ export default function PriceDesk() {
     const det = resolveSku(name);
     if (det) return det;
     try {
-      const sys = "Mapeá el modelo del usuario al SKU EXACTO de esta lista, o devolvé null si no corresponde a ninguno (respetá RAM/almacenamiento y EURO/LATIN). SOLO JSON {\"sku\": \"<exacto de la lista>\" o null}.\nLista:\n" + catalogNames.join("\n");
+      const sys = "Mapeá el modelo del usuario al SKU EXACTO de esta lista, o null si no corresponde a ninguno. Respetá RAM/almacenamiento. Motorola EURO = los 'XT2xxx …'; Motorola LATIN = los 'Motorola …' (ej. 'G06 EURO' → 'XT2535 G06 4+256'; 'G06 LATIN' → 'Motorola G06 4+256'). SOLO JSON {\"sku\": \"<exacto de la lista>\" o null}.\nLista:\n" + catalogNames.join("\n");
       const out = await callGemini({ system: sys, content: String(name || ""), apiKey: apiKey.trim(), json: true, maxTokens: 120 });
       const p = JSON.parse(stripFences(out));
       return p && p.sku && catalogNames.includes(p.sku) ? p.sku : null;
@@ -1308,7 +1308,8 @@ export default function PriceDesk() {
         const line = {
           ...(idx >= 0 ? items[idx] : newOrderLine(sku)),
           sku, qty, color: args.color || (idx >= 0 ? items[idx].color : ""), supplier: sup,
-          cost: costForQty(sku, sup, qty),
+          // costo: negociado si lo pasan; si no, se conserva el de la línea existente; si es nueva, sale del tier
+          cost: args.cost != null ? Number(args.cost) : (idx >= 0 ? items[idx].cost : costForQty(sku, sup, qty)),
           // si no pasan clientPrice: en una línea existente se CONSERVA el precio; en una nueva se usa la lista
           price: args.clientPrice != null ? Number(args.clientPrice) : (idx >= 0 ? items[idx].price : (listaFor(sku) ?? aggBySku[sku]?.client ?? 0)),
           cat: catalog.find((c) => c.name === sku)?.cat || "",
@@ -1319,7 +1320,8 @@ export default function PriceDesk() {
       return { ok: true, linea: { modelo: sku, cantidad: qty, proveedor: sup, costo: costForQty(sku, sup, qty) } };
     }
     if (name === "set_order_items") {
-      const priceBySku = {}; orderRef.current.items.forEach((l) => { priceBySku[l.sku] = l.price; }); // conservar precio acordado por modelo
+      const priceBySku = {}, costBySku = {}; // conservar precio y costo acordados por modelo
+      orderRef.current.items.forEach((l) => { priceBySku[l.sku] = l.price; costBySku[l.sku] = l.cost; });
       const lines = [];
       for (const it of args.items || []) {
         const sku = await resolveSkuSmart(it.sku); if (!sku) continue;
@@ -1327,7 +1329,7 @@ export default function PriceDesk() {
         const qty = Number(it.qty) || 1;
         lines.push({
           ...newOrderLine(sku), sku, qty, color: it.color || "", supplier: sup,
-          cost: costForQty(sku, sup, qty),
+          cost: it.cost != null ? Number(it.cost) : (costBySku[sku] ?? costForQty(sku, sup, qty)),
           price: it.clientPrice != null ? Number(it.clientPrice) : (priceBySku[sku] ?? listaFor(sku) ?? aggBySku[sku]?.client ?? 0),
           cat: catalog.find((c) => c.name === sku)?.cat || "",
         });
