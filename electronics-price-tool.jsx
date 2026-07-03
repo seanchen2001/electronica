@@ -315,6 +315,7 @@ export default function PriceDesk() {
   const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
   const agentContents = useRef([]); // conversación multi-turno del agente
   const orderRef = useRef(order); // espejo síncrono de la orden para los handlers del agente
+  const chatScrollRef = useRef(null); // auto-scroll del chat
 
   // móvil → layout compacto / AI-focus
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches);
@@ -1196,6 +1197,7 @@ export default function PriceDesk() {
 
   // ---- agente de órdenes (function-calling) ----
   useEffect(() => { orderRef.current = order; }, [order]);
+  useEffect(() => { const el = chatScrollRef.current; if (el) el.scrollTop = el.scrollHeight; }, [agentLog, answer, parseMsg, markMsg, chatNote, agentBusy]);
   function agentSetOrder(updater) { const next = updater(orderRef.current); orderRef.current = next; setOrder(next); }
 
   // ranking de proveedores por costo para una cantidad (respeta tiers)
@@ -1479,7 +1481,7 @@ export default function PriceDesk() {
       )}
 
       {/* resultados: crecen y ocupan el alto disponible */}
-      <div style={s.chatResults}>
+      <div style={s.chatResults} ref={chatScrollRef}>
         {chatMode === "agente" ? (
           <>
             {agentLog.length > 0 && (
@@ -1495,7 +1497,7 @@ export default function PriceDesk() {
                 m.role === "you" ? s.agYou : m.role === "agent" ? s.agBot : m.role === "tool" ? s.agTool : s.agSys
               }>{m.text}</div>
             ))}
-            {agentBusy && <div style={s.agTool}>… trabajando</div>}
+            {agentBusy && <div style={{ ...s.agTool, display: "flex", alignItems: "center", gap: 6 }}><span style={s.spinner} /> generando…</div>}
             {agentLog.length === 0 && !agentBusy && (
               <div style={s.chatEmpty}>
                 <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ee0a8" }}>🤖 Agente de órdenes</b> — armá una orden de punta a punta:</p>
@@ -1552,7 +1554,8 @@ export default function PriceDesk() {
   );
 
   return (
-    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}), ...(!isMobile && chatOpen && view === "mesa" ? { paddingRight: 380 } : {}) }}>
+    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}), ...(!isMobile && chatOpen ? { paddingRight: 380 } : {}) }}>
+      <style>{"@keyframes deskspin{to{transform:rotate(360deg)}}"}</style>
       <header style={s.header}>
         <div>
           <div style={s.title}>PRICE DESK</div>
@@ -1871,10 +1874,6 @@ export default function PriceDesk() {
       </section>
 
       </div>
-      {!isMobile && chatBox}
-      {!isMobile && !chatOpen && (
-        <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬 Asistente</button>
-      )}
       </div>
       )}
 
@@ -2326,6 +2325,12 @@ export default function PriceDesk() {
         </section>
       )}
 
+      {/* Chatbox / asistente — global, en todas las pestañas */}
+      {!isMobile && chatBox}
+      {!isMobile && !chatOpen && (
+        <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬 Asistente</button>
+      )}
+
       {/* Modal: confirmación del agente (revisor + resumen) antes de generar */}
       {pendingAgentCommit && (
         <div style={s.modalOverlay} onClick={() => setPendingAgentCommit(null)}>
@@ -2414,6 +2419,7 @@ const styles = {
   mesaMain: { minWidth: 0, transition: "margin-right .2s ease" },
   chatBox: { position: "fixed", top: 0, right: 0, height: "100vh", width: 360, boxSizing: "border-box", display: "flex", flexDirection: "column", background: "#0f1420", borderLeft: "1px solid #22304a", padding: 14, zIndex: 40, transition: "transform .2s ease" },
   chatResults: { flex: 1, overflowY: "auto", marginTop: 8, display: "flex", flexDirection: "column", gap: 8 },
+  spinner: { width: 11, height: 11, borderRadius: "50%", border: "2px solid #2a3346", borderTopColor: "#6ea8fe", display: "inline-block", animation: "deskspin 0.7s linear infinite" },
   chatEmpty: { fontSize: 12, color: "#6b7385", lineHeight: 1.5, border: "1px dashed #22304a", borderRadius: 6, padding: 12, background: "#0b0e14" },
   agYou: { alignSelf: "flex-end", maxWidth: "90%", background: "#1d2740", border: "1px solid #2f4166", color: "#dbe6f7", borderRadius: "8px 8px 2px 8px", padding: "6px 9px", fontSize: 12.5, whiteSpace: "pre-wrap" },
   agBot: { background: "#0f1a12", border: "1px solid #244a2c", color: "#d7ead9", borderRadius: "8px 8px 8px 2px", padding: "7px 10px", fontSize: 12.5, whiteSpace: "pre-wrap", lineHeight: 1.45 },
