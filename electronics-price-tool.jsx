@@ -69,6 +69,7 @@ const LEDGER_KEY = "desk-ledger-v1";
 const SUPP_KEY = "desk-suppliers-v1";
 const ALIASES_KEY = "desk-aliases-v1";
 const TIERS_KEY = "desk-tiers-v1";
+const PHIST_KEY = "desk-price-history-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -267,6 +268,7 @@ export default function PriceDesk() {
   const [pendingNew, setPendingNew] = useState([]); // sugerencias de modelos nuevos a confirmar
   const [prices, setPrices] = useState(() => load(PRICES_KEY, {}));
   const [tiers, setTiers] = useState(() => load(TIERS_KEY, {})); // escalas por cantidad: tiers[sku][sup] = [{min,price}]
+  const [priceHistory, setPriceHistory] = useState(() => load(PHIST_KEY, [])); // append-only: {sku,sup,price,ts} para analítica
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
   const [snapshots, setSnapshots] = useState(() => load(SNAP_KEY, []));
@@ -353,6 +355,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
+  useEffect(() => { try { localStorage.setItem(PHIST_KEY, JSON.stringify(priceHistory)); } catch {} }, [priceHistory]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -402,6 +405,7 @@ export default function PriceDesk() {
           setTimes((t) => resolveObj(d.times, t, "times"));
           setLista((l) => resolveObj(d.lista, l, "lista"));
           setTiers((t) => resolveObj(d.tiers, t, "tiers"));
+          setPriceHistory((h) => resolve(d.priceHistory, h, "priceHistory"));
         }
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
@@ -433,6 +437,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
+  useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -475,6 +480,12 @@ export default function PriceDesk() {
     });
     stampTimes([[sku, supplier, remove]]);
   }
+  // append-only: guarda cada actualización de precio (para analítica / serie temporal)
+  function logPrices(entries) {
+    const now = Date.now();
+    const recs = (entries || []).filter((e) => typeof e.price === "number").map((e) => ({ sku: e.sku, sup: e.supplier, price: e.price, ts: now }));
+    if (recs.length) setPriceHistory((h) => [...recs, ...h].slice(0, 50000));
+  }
   function setListaCell(sku, value) {
     setLista((prev) => {
       const next = { ...prev };
@@ -513,6 +524,7 @@ export default function PriceDesk() {
         return next;
       });
       stampTimes(keys.map((sku) => [sku, supplier, false]));
+      logPrices(keys.map((sku) => ({ sku, supplier, price: matched[sku] })));
       if (textArg == null) setRawText("");
       const tierCount = keys.filter((sku) => parsedTiers[sku]).length;
       // modelos nuevos → a la cola de confirmación (con el proveedor de origen)
@@ -540,6 +552,7 @@ export default function PriceDesk() {
     if (m.price != null) {
       setPrices((prev) => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [m.supplier]: m.price } }));
       stampTimes([[m.name, m.supplier, false]]);
+      logPrices([{ sku: m.name, supplier: m.supplier, price: m.price }]);
     }
     setPendingNew((p) => p.filter((_, i) => i !== idx));
   }
