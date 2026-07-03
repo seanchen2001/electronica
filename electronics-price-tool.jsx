@@ -1457,8 +1457,10 @@ export default function PriceDesk() {
         const responses = [];
         let paused = false;
         for (const fc of calls) {
-          setAgentLog((l) => [...l, { role: "tool", text: `⚙ ${fc.name}` }]);
+          setAgentLog((l) => [...l, { role: "tool", text: `⚙ ${fc.name}(${JSON.stringify(fc.args || {})})` }]);
           const result = await runTool(fc.name, fc.args || {});
+          const rs = JSON.stringify(result);
+          setAgentLog((l) => [...l, { role: "tool", text: `↳ ${rs.length > 400 ? rs.slice(0, 400) + "…" : rs}` }]);
           responses.push({ functionResponse: { name: fc.name, response: result } });
           if (result && result.status === "needs_confirmation") paused = true;
         }
