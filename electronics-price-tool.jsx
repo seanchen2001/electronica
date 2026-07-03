@@ -302,6 +302,7 @@ export default function PriceDesk() {
   const [mergeFrom, setMergeFrom] = useState(""); const [mergeTo, setMergeTo] = useState("");
   const [payForm, setPayForm] = useState({ amount: "", concept: "", date: today(), type: "pago" });
   const [docType, setDocType] = useState("factura"); // "factura" | "remito"
+  const [expandedModels, setExpandedModels] = useState({}); // desglose de colores abierto por modelo en la orden
   const [pdfBusy, setPdfBusy] = useState(false);
   const [orderQuery, setOrderQuery] = useState("");
   const [order, setOrder] = useState({
@@ -2050,34 +2051,53 @@ export default function PriceDesk() {
               </tr>
             </thead>
             <tbody>
-              {order.items.map((it, idx) => {
-                const sups = Object.keys(prices[it.sku] || {});
-                const supOpts = it.supplier && !sups.includes(it.supplier) ? [it.supplier, ...sups] : sups;
-                return (
-                <tr key={idx}>
-                  <td style={s.invTd}><input value={it.qty} onChange={(e) => setItem(idx, "qty", e.target.value)} style={{ ...s.cellInput, width: 44, border: "1px solid #232a3a" }} /></td>
-                  <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{it.sku}</td>
-                  <td style={s.invTd}>
-                    <input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} />
-                    <span style={s.chipSplit} title="Splitear: duplica esta línea para otro color" onClick={() => splitItem(idx)}>+</span>
-                  </td>
-                  <td style={s.invTd}><input value={it.spec || ""} onChange={(e) => setItem(idx, "spec", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 60, border: "1px solid #232a3a" }} /></td>
-                  <td style={s.invTd}>
-                    <select value={it.supplier || ""} onChange={(e) => setItemSupplier(idx, e.target.value)} style={{ ...s.cellInput, width: 132, border: "1px solid #232a3a" }}>
-                      <option value="">—</option>
-                      {supOpts.map((sp) => <option key={sp} value={sp}>{sp}{typeof prices[it.sku]?.[sp] === "number" ? ` · $${Math.round(prices[it.sku][sp])}` : ""}</option>)}
-                    </select>
-                  </td>
-                  <td style={s.invTd}>
-                    <input value={it.cost ?? 0} onChange={(e) => setItem(idx, "cost", e.target.value)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a", color: "#9aa4b2" }} />
-                    {hasTiers(it.sku, it.supplier) && <span title={`Escala x cantidad (${it.supplier}):\n` + tiers[it.sku][it.supplier].map((t) => `${t.min}+ pzs → $${t.price}`).join("\n")} style={{ color: "#c084fc", fontSize: 10, marginLeft: 3, cursor: "help" }}>⇙</span>}
-                  </td>
-                  {docType === "factura" && <td style={s.invTd}><input value={it.price} onChange={(e) => setItem(idx, "price", e.target.value)} style={{ ...s.cellInput, width: 70, border: "1px solid #232a3a" }} /></td>}
-                  {docType === "factura" && <td style={{ ...s.invTd, color: "#fbbf24" }}>{money((Number(it.qty) || 0) * (Number(it.price) || 0))}</td>}
-                  <td style={s.invTd}><span style={s.chipX} onClick={() => removeItem(idx)}>×</span></td>
-                </tr>
-                );
-              })}
+              {(() => {
+                const groups = {};
+                order.items.forEach((it, idx) => { (groups[it.sku] ||= []).push({ it, idx }); });
+                const detailCols = docType === "factura" ? 7 : 5;
+                return Object.entries(groups).map(([sku, rows]) => {
+                  const totalQty = rows.reduce((a, r) => a + (Number(r.it.qty) || 0), 0);
+                  const colorsTxt = rows.map((r) => `${r.it.qty} ${r.it.color || "—"}`).join(", ");
+                  const open = expandedModels[sku] ?? (rows.length === 1); // 1 color: abierto; varios: total colapsado
+                  return (
+                    <React.Fragment key={sku}>
+                      <tr onClick={() => setExpandedModels((m) => ({ ...m, [sku]: !open }))} style={{ cursor: "pointer", background: "#131823" }}>
+                        <td style={{ ...s.invTd, fontWeight: 700 }}>{totalQty}</td>
+                        <td style={{ ...s.invTd, textAlign: "left", color: "#e8ecf3" }}>{rows.length > 1 ? (open ? "▾ " : "▸ ") : ""}{sku}</td>
+                        <td colSpan={detailCols} style={{ ...s.invTd, textAlign: "left", color: "#8b94a7" }}>{rows.length > 1 && !open ? colorsTxt : ""}</td>
+                      </tr>
+                      {open && rows.map(({ it, idx }) => {
+                        const sups = Object.keys(prices[it.sku] || {});
+                        const supOpts = it.supplier && !sups.includes(it.supplier) ? [it.supplier, ...sups] : sups;
+                        return (
+                          <tr key={idx}>
+                            <td style={s.invTd}><input value={it.qty} onChange={(e) => setItem(idx, "qty", e.target.value)} style={{ ...s.cellInput, width: 44, border: "1px solid #232a3a" }} /></td>
+                            <td style={{ ...s.invTd, textAlign: "left", color: "#6b7385", paddingLeft: 18 }}>{it.color || "↳"}</td>
+                            <td style={s.invTd}>
+                              <input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} />
+                              <span style={s.chipSplit} title="Splitear: duplica esta línea para otro color" onClick={() => splitItem(idx)}>+</span>
+                            </td>
+                            <td style={s.invTd}><input value={it.spec || ""} onChange={(e) => setItem(idx, "spec", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 60, border: "1px solid #232a3a" }} /></td>
+                            <td style={s.invTd}>
+                              <select value={it.supplier || ""} onChange={(e) => setItemSupplier(idx, e.target.value)} style={{ ...s.cellInput, width: 132, border: "1px solid #232a3a" }}>
+                                <option value="">—</option>
+                                {supOpts.map((sp) => <option key={sp} value={sp}>{sp}{typeof prices[it.sku]?.[sp] === "number" ? ` · $${Math.round(prices[it.sku][sp])}` : ""}</option>)}
+                              </select>
+                            </td>
+                            <td style={s.invTd}>
+                              <input value={it.cost ?? 0} onChange={(e) => setItem(idx, "cost", e.target.value)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a", color: "#9aa4b2" }} />
+                              {hasTiers(it.sku, it.supplier) && <span title={`Escala x cantidad (${it.supplier}):\n` + tiers[it.sku][it.supplier].map((t) => `${t.min}+ pzs → $${t.price}`).join("\n")} style={{ color: "#c084fc", fontSize: 10, marginLeft: 3, cursor: "help" }}>⇙</span>}
+                            </td>
+                            {docType === "factura" && <td style={s.invTd}><input value={it.price} onChange={(e) => setItem(idx, "price", e.target.value)} style={{ ...s.cellInput, width: 70, border: "1px solid #232a3a" }} /></td>}
+                            {docType === "factura" && <td style={{ ...s.invTd, color: "#fbbf24" }}>{money((Number(it.qty) || 0) * (Number(it.price) || 0))}</td>}
+                            <td style={s.invTd}><span style={s.chipX} onClick={() => removeItem(idx)}>×</span></td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         )}
