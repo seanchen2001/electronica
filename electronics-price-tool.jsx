@@ -806,7 +806,7 @@ export default function PriceDesk() {
   function newOrderLine(sku) {
     const sup = cheapestSupplier(sku);
     const cat = catalog.find((c) => c.name === sku)?.cat || "";
-    return { sku, cat, qty: 1, color: "", spec: specForCat(cat), supplier: sup, cost: costForQty(sku, sup, 1), price: listaFor(sku) ?? aggBySku[sku]?.client ?? 0 };
+    return { sku, cat, qty: 1, color: "", imei: "", spec: specForCat(cat), supplier: sup, cost: costForQty(sku, sup, 1), price: listaFor(sku) ?? aggBySku[sku]?.client ?? 0 };
   }
   // splitear una línea en varios colores: duplica la fila (qty 1, color en blanco para llenar)
   function splitItem(idx) {
@@ -2103,6 +2103,7 @@ export default function PriceDesk() {
                 <th style={s.invTh}>Qty</th>
                 <th style={{ ...s.invTh, textAlign: "left" }}>Descripción</th>
                 <th style={s.invTh}>Color</th>
+                <th style={s.invTh}>IMEI</th>
                 <th style={s.invTh}>Spec</th>
                 <th style={s.invTh}>Proveedor</th>
                 <th style={s.invTh} title="Costo del proveedor elegido × cantidad">Costo</th>
@@ -2115,7 +2116,7 @@ export default function PriceDesk() {
               {(() => {
                 const groups = {};
                 order.items.forEach((it, idx) => { (groups[it.sku] ||= []).push({ it, idx }); });
-                const detailCols = docType === "factura" ? 7 : 5;
+                const detailCols = docType === "factura" ? 8 : 6;
                 return Object.entries(groups).map(([sku, rows]) => {
                   const totalQty = rows.reduce((a, r) => a + (Number(r.it.qty) || 0), 0);
                   const colorsTxt = rows.map((r) => `${r.it.qty} ${r.it.color || "—"}`).join(", ");
@@ -2138,6 +2139,7 @@ export default function PriceDesk() {
                               <input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} />
                               <span style={s.chipSplit} title="Splitear: duplica esta línea para otro color" onClick={() => splitItem(idx)}>+</span>
                             </td>
+                            <td style={s.invTd}><input value={it.imei || ""} onChange={(e) => setItem(idx, "imei", e.target.value)} placeholder="—" title="IMEI(s) — uno o varios" style={{ ...s.cellInput, width: 110, border: "1px solid #232a3a" }} /></td>
                             <td style={s.invTd}><input value={it.spec || ""} onChange={(e) => setItem(idx, "spec", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 60, border: "1px solid #232a3a" }} /></td>
                             <td style={s.invTd}>
                               <select value={it.supplier || ""} onChange={(e) => setItemSupplier(idx, e.target.value)} style={{ ...s.cellInput, width: 132, border: "1px solid #232a3a" }}>

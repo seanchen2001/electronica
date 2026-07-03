@@ -14,7 +14,8 @@ const money = (n) =>
 // los Motorola ya traen la marca en el nombre.
 function itemDesc(it) {
   const brand = it.cat === "Samsung" ? "Samsung " : "";
-  return [brand + it.sku, it.color, it.spec].filter((x) => x && String(x).trim()).join(" - ");
+  // orden: modelo - color - IMEI - spec
+  return [brand + it.sku, it.color, it.imei, it.spec].filter((x) => x && String(x).trim()).join(" - ");
 }
 const GRAY = "#f0f0f0";
 const BLACK = "#000";
