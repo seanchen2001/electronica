@@ -2147,8 +2147,11 @@ export default function PriceDesk() {
                   );
                 };
                 return Object.entries(groups).map(([sku, rows]) => {
-                  // un solo color → una sola fila (con el modelo); varios → total + desglose colapsable
-                  if (rows.length === 1) return <React.Fragment key={sku}>{editRow(rows[0], <span style={{ color: "#cfd6e4" }}>{sku}</span>)}</React.Fragment>;
+                  // un solo color → una sola fila (con el modelo + su color); varios → total + desglose colapsable
+                  if (rows.length === 1) {
+                    const c = rows[0].it.color;
+                    return <React.Fragment key={sku}>{editRow(rows[0], <span style={{ color: "#cfd6e4" }}>{sku}{c ? <span style={{ color: "#8b94a7" }}> · {c}</span> : ""}</span>)}</React.Fragment>;
+                  }
                   const totalQty = rows.reduce((a, r) => a + (Number(r.it.qty) || 0), 0);
                   const colorsTxt = rows.map((r) => `${r.it.qty} ${r.it.color || "—"}`).join(", ");
                   const open = !!expandedModels[sku];
