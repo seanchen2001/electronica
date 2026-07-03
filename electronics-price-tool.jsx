@@ -70,6 +70,7 @@ const SUPP_KEY = "desk-suppliers-v1";
 const ALIASES_KEY = "desk-aliases-v1";
 const TIERS_KEY = "desk-tiers-v1";
 const PHIST_KEY = "desk-price-history-v1";
+const DRAFTS_KEY = "desk-drafts-v1";
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -310,6 +311,8 @@ export default function PriceDesk() {
   const [orderClientId, setOrderClientId] = useState(""); // selección en Órdenes
   const [orderShipId, setOrderShipId] = useState("");
   const [editingTs, setEditingTs] = useState(null); // ts del registro del Historial que se está editando
+  const [drafts, setDrafts] = useState(() => load(DRAFTS_KEY, [])); // pedidos pendientes: [{id, order, clientId, shipId, ts}]
+  const [activeId, setActiveId] = useState(() => uid()); // id del pedido activo
   // ---- agente ----
   const [agentLog, setAgentLog] = useState([]); // [{role, text}]
   const [agentBusy, setAgentBusy] = useState(false);
@@ -356,6 +359,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
   useEffect(() => { try { localStorage.setItem(PHIST_KEY, JSON.stringify(priceHistory)); } catch {} }, [priceHistory]);
+  useEffect(() => { try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts)); } catch {} }, [drafts]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -407,6 +411,7 @@ export default function PriceDesk() {
           setTiers((t) => resolveObj(d.tiers, t, "tiers"));
           setPriceHistory((h) => resolve(d.priceHistory, h, "priceHistory"));
         }
+        setDrafts((x) => resolve(d.drafts, x, "drafts"));
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
     finally { dbReady.current = true; }
@@ -438,6 +443,17 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
+  useEffect(() => { syncUp("drafts", drafts); }, [drafts]);
+  // auto-guardar el pedido activo (si tiene items) en la lista de pendientes
+  useEffect(() => {
+    if (!activeId || !order.items.length) return;
+    setDrafts((ds) => {
+      const entry = { id: activeId, order, clientId: orderClientId, shipId: orderShipId, ts: Date.now() };
+      const i = ds.findIndex((x) => x.id === activeId);
+      if (i >= 0) { const n = [...ds]; n[i] = entry; return n; }
+      return [entry, ...ds];
+    });
+  }, [order, orderClientId, orderShipId, activeId]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -976,9 +992,23 @@ export default function PriceDesk() {
   }
   // Volver a una orden nueva (limpia el modo edición).
   function resetOrder() {
-    setOrder({ items: [], invoiceNo: String(nextInvoiceNo(invoiceHistory)), date: today(), payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "" });
+    const empty = { items: [], invoiceNo: String(nextInvoiceNo(invoiceHistory)), date: today(), payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "" };
+    orderRef.current = empty; setOrder(empty);
     setOrderClientId(""); setOrderShipId(""); setEditingTs(null); setDocType("factura");
+    setActiveId(uid()); // pedido nuevo (los otros quedan en pendientes)
   }
+  // cambiar de pedido pendiente
+  function switchOrder(id) {
+    const d = drafts.find((x) => x.id === id); if (!d) return;
+    orderRef.current = d.order; setOrder(d.order); setOrderClientId(d.clientId || ""); setOrderShipId(d.shipId || ""); setActiveId(id); setEditingTs(null); setDocType("factura");
+  }
+  function deleteDraft(id) {
+    if (!confirm("¿Borrar este pedido pendiente?")) return;
+    setDrafts((ds) => ds.filter((x) => x.id !== id));
+    if (id === activeId) resetOrder();
+  }
+  // nombre de cliente de un draft (para mostrar/buscar)
+  function draftClientName(d) { return clients.find((c) => c.id === d.clientId)?.name || d.order?.items?.[0]?.sku || "sin cliente"; }
 
   // ---- cuentas corrientes ----
   // Débito suma al saldo, Crédito resta. Cliente: saldo = lo que nos debe. Proveedor: saldo = lo que le debemos.
@@ -1297,6 +1327,23 @@ export default function PriceDesk() {
     if (name === "best_supplier") { const sku = await resolveSkuSmart(args.sku); return sku ? bestSuppliers(sku, args.qty || 1) : { error: `No encontré "${args.sku}" en el catálogo.` }; }
     if (name === "negotiation_report") return negotiationReport(args.scope || "order");
     if (name === "order_summary") return orderSummaryData();
+    if (name === "list_orders") {
+      const list = drafts.map((d) => ({
+        id: d.id, activo: d.id === activeId,
+        cliente: clients.find((c) => c.id === d.clientId)?.name || "sin cliente",
+        modelos: [...new Set((d.order?.items || []).map((i) => i.sku))],
+        piezas: (d.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0),
+      }));
+      return { activo: activeId, pedidos: list };
+    }
+    if (name === "switch_order") {
+      const byName = (nm) => drafts.find((x) => (clients.find((c) => c.id === x.clientId)?.name || "").toLowerCase().includes(String(nm).toLowerCase()));
+      const d = (args.id && drafts.find((x) => x.id === args.id)) || (args.clientName && byName(args.clientName));
+      if (!d) return { ok: false, error: "No encontré un pedido pendiente para eso.", pedidos: drafts.map((x) => ({ cliente: clients.find((c) => c.id === x.clientId)?.name || "sin cliente" })) };
+      switchOrder(d.id);
+      return { ok: true, cambiado_a: clients.find((c) => c.id === d.clientId)?.name || d.id };
+    }
+    if (name === "new_order") { resetOrder(); return { ok: true, mensaje: "Pedido nuevo y vacío. Los otros quedan en pendientes." }; }
     if (name === "add_order_line") {
       const sku = await resolveSkuSmart(args.sku);
       if (!sku) return { ok: false, error: `SKU desconocido: ${args.sku}` };
@@ -1895,6 +1942,22 @@ export default function PriceDesk() {
       {view === "ordenes" && (
       <section style={s.section}>
         <div style={s.sectionTitle}>ÓRDENES — Factura / Remito</div>
+        {/* pedidos pendientes */}
+        <div style={s.acctTabs}>
+          <span style={{ fontSize: 10.5, color: "#6b7385", alignSelf: "center", marginRight: 2 }}>PEDIDOS:</span>
+          {drafts.map((d) => {
+            const on = d.id === activeId;
+            const cli = clients.find((c) => c.id === d.clientId)?.name;
+            const pzs = (d.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0);
+            return (
+              <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), display: "inline-flex", gap: 6 }}>
+                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {pzs}u</span>
+                <span style={s.chipX} onClick={() => deleteDraft(d.id)}>×</span>
+              </span>
+            );
+          })}
+          <button onClick={resetOrder} style={{ ...s.miniBtn }}>+ Nuevo pedido</button>
+        </div>
         {editingTs && (
           <div style={s.editBanner}>
             ✏️ Editando la factura <b>#{order.invoiceNo}</b> — al guardar se actualiza esa misma (recalcula cuentas y PnL).
