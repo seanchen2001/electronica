@@ -1294,13 +1294,31 @@ export default function PriceDesk() {
           ...(idx >= 0 ? items[idx] : newOrderLine(sku)),
           sku, qty, color: args.color || (idx >= 0 ? items[idx].color : ""), supplier: sup,
           cost: costForQty(sku, sup, qty),
-          price: args.clientPrice != null ? Number(args.clientPrice) : (listaFor(sku) ?? aggBySku[sku]?.client ?? 0),
+          // si no pasan clientPrice: en una línea existente se CONSERVA el precio; en una nueva se usa la lista
+          price: args.clientPrice != null ? Number(args.clientPrice) : (idx >= 0 ? items[idx].price : (listaFor(sku) ?? aggBySku[sku]?.client ?? 0)),
           cat: catalog.find((c) => c.name === sku)?.cat || "",
         };
         if (idx >= 0) items[idx] = line; else items.push(line);
         return { ...o, items };
       });
       return { ok: true, linea: { modelo: sku, cantidad: qty, proveedor: sup, costo: costForQty(sku, sup, qty) } };
+    }
+    if (name === "set_order_items") {
+      const priceBySku = {}; orderRef.current.items.forEach((l) => { priceBySku[l.sku] = l.price; }); // conservar precio acordado por modelo
+      const lines = [];
+      for (const it of args.items || []) {
+        const sku = await resolveSkuSmart(it.sku); if (!sku) continue;
+        const sup = it.supplier || cheapestSupplier(sku);
+        const qty = Number(it.qty) || 1;
+        lines.push({
+          ...newOrderLine(sku), sku, qty, color: it.color || "", supplier: sup,
+          cost: costForQty(sku, sup, qty),
+          price: it.clientPrice != null ? Number(it.clientPrice) : (priceBySku[sku] ?? listaFor(sku) ?? aggBySku[sku]?.client ?? 0),
+          cat: catalog.find((c) => c.name === sku)?.cat || "",
+        });
+      }
+      agentSetOrder((o) => ({ ...o, items: lines }));
+      return { ok: true, total_lineas: lines.length };
     }
     if (name === "set_order_meta") {
       if (args.clientName) { const c = clients.find((x) => (x.name || "").toLowerCase() === String(args.clientName).toLowerCase()); if (c) setOrderClientId(c.id); }
