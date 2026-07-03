@@ -1340,11 +1340,16 @@ export default function PriceDesk() {
       return { activo: activeId, pedidos: list };
     }
     if (name === "switch_order") {
-      const byName = (nm) => drafts.find((x) => (clients.find((c) => c.id === x.clientId)?.name || "").toLowerCase().includes(String(nm).toLowerCase()));
-      const d = (args.id && drafts.find((x) => x.id === args.id)) || (args.clientName && byName(args.clientName));
-      if (!d) return { ok: false, error: "No encontré un pedido pendiente para eso.", pedidos: drafts.map((x) => ({ cliente: clients.find((c) => c.id === x.clientId)?.name || "sin cliente" })) };
-      switchOrder(d.id);
-      return { ok: true, cambiado_a: clients.find((c) => c.id === d.clientId)?.name || d.id };
+      const inc = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
+      const nm = (x) => clients.find((c) => c.id === x.clientId)?.name || "sin cliente";
+      const summ = (x) => ({ id: x.id, cliente: nm(x), modelos: [...new Set((x.order?.items || []).map((i) => i.sku))], piezas: (x.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0) });
+      if (args.id) { const d = drafts.find((x) => x.id === args.id); if (d) { switchOrder(d.id); return { ok: true, cambiado_a: summ(d) }; } }
+      let cands = drafts;
+      if (args.clientName) cands = cands.filter((x) => inc(nm(x), args.clientName));
+      if (args.model) cands = cands.filter((x) => (x.order?.items || []).some((i) => inc(i.sku, args.model)));
+      if (cands.length === 1) { switchOrder(cands[0].id); return { ok: true, cambiado_a: summ(cands[0]) }; }
+      if (cands.length === 0) return { ok: false, error: "No encontré un pedido con eso.", pedidos: drafts.map(summ) };
+      return { ambiguo: true, mensaje: "Hay varios pedidos que coinciden. Preguntá al usuario cuál (distinguí por los modelos).", candidatos: cands.map(summ) };
     }
     if (name === "new_order") { resetOrder(); return { ok: true, mensaje: "Pedido nuevo y vacío. Los otros quedan en pendientes." }; }
     if (name === "add_order_line") {
@@ -1986,9 +1991,11 @@ export default function PriceDesk() {
             const on = d.id === activeId;
             const cli = clients.find((c) => c.id === d.clientId)?.name;
             const pzs = (d.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0);
+            const models = [...new Set((d.order?.items || []).map((i) => i.sku))];
+            const hint = models.slice(0, 2).map((m) => m.split(" ")[0]).join("/") + (models.length > 2 ? "+" : "");
             return (
-              <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), display: "inline-flex", gap: 6 }}>
-                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {pzs}u</span>
+              <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), display: "inline-flex", gap: 6 }} title={models.join(", ")}>
+                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {hint || "—"} · {pzs}u</span>
                 <span style={s.chipX} onClick={() => deleteDraft(d.id)}>×</span>
               </span>
             );
