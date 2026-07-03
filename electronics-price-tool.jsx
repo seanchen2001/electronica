@@ -707,6 +707,18 @@ export default function PriceDesk() {
       .join("\n\n");
   }, [quoteGroups, quoteSource, quoteOverrides, lista, aggBySku]);
 
+  // texto de cotización WhatsApp para una lista de SKUs (agrupado por categoría del catálogo)
+  function whatsappQuoteText(skus, source = "lista") {
+    const priceOf = (sku) => (source === "lista" ? listaFor(sku) : aggBySku[sku]?.client);
+    const set = new Set(skus);
+    const groups = []; let cur = null;
+    for (const { name, cat } of catalog) {
+      if (!set.has(name)) continue;
+      if (!cur || cur.cat !== cat) { cur = { cat, items: [] }; groups.push(cur); }
+      cur.items.push(name);
+    }
+    return groups.map((g) => `${g.cat}\n${g.items.map((sku) => { const p = priceOf(sku); return `${sku}\t${p == null ? "—" : "$" + Math.round(p)}`; }).join("\n")}`).join("\n\n");
+  }
   async function copyQuote() {
     try {
       await navigator.clipboard.writeText(quoteText);
@@ -1423,9 +1435,14 @@ export default function PriceDesk() {
       return { items, margin_pct_actual: marginNum, nota: "margen_%_ es sobre el costo (igual que el MARGIN % de la app)." };
     }
     if (name === "build_quote") {
-      if (args.source === "client" || args.source === "lista") changeSource(args.source);
-      setSelected(Object.fromEntries(orderRef.current.items.map((i) => [i.sku, true])));
-      return { ok: true, nota: "Cotización marcada; el texto se ve en la Mesa (sección Cotización)." };
+      const source = args.source === "client" ? "client" : "lista";
+      let skus;
+      if (Array.isArray(args.models) && args.models.length) skus = (await Promise.all(args.models.map((m) => resolveSkuSmart(m)))).filter(Boolean);
+      else skus = [...new Set(orderRef.current.items.map((i) => i.sku))];
+      if (!skus.length) return { ok: false, error: "No hay modelos para cotizar." };
+      changeSource(source);
+      setSelected(Object.fromEntries(skus.map((s) => [s, true])));
+      return { ok: true, precio: source, texto_whatsapp: whatsappQuoteText(skus, source), nota: "Pasale este texto al usuario para copiar a WhatsApp." };
     }
     if (name === "generate_invoice") {
       setDocType("factura");
