@@ -71,6 +71,9 @@ const ALIASES_KEY = "desk-aliases-v1";
 const TIERS_KEY = "desk-tiers-v1";
 const PHIST_KEY = "desk-price-history-v1";
 const DRAFTS_KEY = "desk-drafts-v1";
+// Un pedido pendiente se auto-borra si queda SIN TOCARSE más de esto (por inactividad, no por creación).
+// El pedido ACTIVO nunca se borra. Cambiá el número si querés darle más/menos margen.
+const DRAFT_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -457,6 +460,20 @@ export default function PriceDesk() {
       return [entry, ...ds];
     });
   }, [order, orderClientId, orderShipId, activeId, editingTs]);
+  // barrer pedidos pendientes inactivos: los que no se tocan hace más de DRAFT_TTL_MS se borran solos.
+  // Nunca borra el pedido ACTIVO. Corre al abrir y cada 15 min.
+  useEffect(() => {
+    const sweep = () => {
+      const cutoff = Date.now() - DRAFT_TTL_MS;
+      setDrafts((ds) => {
+        const kept = ds.filter((d) => d.id === activeId || (d.ts || 0) > cutoff);
+        return kept.length === ds.length ? ds : kept;
+      });
+    };
+    sweep();
+    const t = setInterval(sweep, 15 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [activeId]);
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -1370,6 +1387,24 @@ export default function PriceDesk() {
       if (cands.length === 0) return { ok: false, error: "No encontré un pedido con eso.", pedidos: drafts.map(summ) };
       return { ambiguo: true, mensaje: "Hay varios pedidos que coinciden. Preguntá al usuario cuál (distinguí por los modelos).", candidatos: cands.map(summ) };
     }
+    if (name === "delete_order") {
+      const inc = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
+      const nm = (x) => clients.find((c) => c.id === x.clientId)?.name || "sin cliente";
+      const summ = (x) => ({ id: x.id, cliente: nm(x), modelos: [...new Set((x.order?.items || []).map((i) => i.sku))], piezas: (x.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0) });
+      let cands = drafts;
+      if (args.id) cands = drafts.filter((x) => x.id === args.id);
+      else {
+        if (args.clientName) cands = cands.filter((x) => inc(nm(x), args.clientName));
+        if (args.model) cands = cands.filter((x) => (x.order?.items || []).some((i) => inc(i.sku, args.model)));
+      }
+      if (cands.length === 0) return { ok: false, error: "No encontré un pedido pendiente con eso.", pedidos: drafts.map(summ) };
+      if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios pedidos que coinciden. Preguntá cuál borrar (distinguí por los modelos). No borres sin estar seguro.", candidatos: cands.map(summ) };
+      const target = cands[0];
+      const info = summ(target);
+      setDrafts((ds) => ds.filter((x) => x.id !== target.id));
+      if (target.id === activeId) resetOrder(); // si borrás el activo, arrancá uno nuevo y vacío
+      return { ok: true, borrado: info };
+    }
     if (name === "new_order") { resetOrder(); return { ok: true, mensaje: "Pedido nuevo y vacío. Los otros quedan en pendientes." }; }
     if (name === "add_order_line") {
       const sku = await resolveSkuSmart(args.sku);
@@ -1992,9 +2027,13 @@ export default function PriceDesk() {
             const pzs = (d.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0);
             const models = [...new Set((d.order?.items || []).map((i) => i.sku))];
             const hint = models.slice(0, 2).map((m) => m.split(" ")[0]).join("/") + (models.length > 2 ? "+" : "");
+            const idle = Date.now() - (d.ts || 0);
+            const age = idle < 3600e3 ? `${Math.max(1, Math.round(idle / 60e3))}m` : idle < 86400e3 ? `${Math.floor(idle / 3600e3)}h` : `${Math.floor(idle / 86400e3)}d`;
+            const stale = !on && idle > DRAFT_TTL_MS * 0.66; // acercándose al auto-borrado (6 h)
             return (
-              <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), display: "inline-flex", gap: 6 }} title={models.join(", ")}>
-                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {hint || "—"} · {pzs}u</span>
+              <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), ...(stale ? { opacity: 0.6 } : {}), display: "inline-flex", gap: 6 }}
+                title={models.join(", ") + (on ? "" : `\nInactivo hace ${age}` + (stale ? " — se auto-borra a las 6 h de inactividad" : ""))}>
+                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {hint || "—"} · {pzs}u{on ? "" : <span style={{ color: stale ? "#d08a5a" : "#5a6273" }}> · {stale ? "⏳" : ""}{age}</span>}</span>
                 <span style={s.chipX} onClick={() => deleteDraft(d.id)}>×</span>
               </span>
             );
