@@ -1475,11 +1475,23 @@ export default function PriceDesk() {
       return { ok: true, total_lineas: lines.length };
     }
     if (name === "set_order_meta") {
-      if (args.clientName) { const c = clients.find((x) => (x.name || "").toLowerCase() === String(args.clientName).toLowerCase()); if (c) setOrderClientId(c.id); }
+      const notes = {};
+      if (args.clientName) {
+        const q = String(args.clientName).toLowerCase();
+        const c = clients.find((x) => (x.name || "").toLowerCase() === q) || clients.find((x) => (x.name || "").toLowerCase().includes(q));
+        if (c) setOrderClientId(c.id); else notes.cliente_no_encontrado = args.clientName; // el agente debe agregarlo con add_client
+      }
+      if (args.shipping) {
+        const q = String(args.shipping).toLowerCase();
+        const sh = shippings.find((x) => (x.label || "").toLowerCase() === q || (x.notify || "").toLowerCase() === q)
+          || shippings.find((x) => (x.label || "").toLowerCase().includes(q) || (x.notify || "").toLowerCase().includes(q));
+        if (sh) { setOrderShipId(sh.id); if (sh.direccion) agentSetOrder((o) => ({ ...o, deliveryAddr: sh.direccion })); }
+        else notes.envio_no_encontrado = args.shipping; // el agente debe agregarlo con add_shipping (o pedir la dirección)
+      }
       if (args.deliveryAddr) agentSetOrder((o) => ({ ...o, deliveryAddr: args.deliveryAddr }));
       if (args.date) agentSetOrder((o) => ({ ...o, date: args.date }));
       if (args.marginPct != null) setMargin(String(args.marginPct));
-      return { ok: true };
+      return { ok: true, ...notes };
     }
     if (name === "quote_analysis") {
       const r1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
@@ -1620,7 +1632,7 @@ export default function PriceDesk() {
     setDocType("factura");
     setAgentBusy(true);
     setAgentLog((l) => [...l, { role: "you", text: (userText || "") + (file ? "  📷 (imagen)" : "") }]);
-    const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean) });
+    const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean), shippingNames: shippings.map((sh) => sh.label || sh.notify).filter(Boolean) });
     const stateSnapshot = { orden_actual: orderSummaryData() };
     const parts = [];
     const quoteImages = [];
@@ -2129,11 +2141,10 @@ export default function PriceDesk() {
             const idle = Date.now() - (d.ts || 0);
             const age = idle < 3600e3 ? `${Math.max(1, Math.round(idle / 60e3))}m` : idle < 86400e3 ? `${Math.floor(idle / 3600e3)}h` : `${Math.floor(idle / 86400e3)}d`;
             const stale = !on && idle > DRAFT_TTL_MS * 0.66; // acercándose al auto-borrado (6 h)
-            const st = stageInfo(d.order?.stage);
             return (
               <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), ...(stale ? { opacity: 0.6 } : {}), display: "inline-flex", gap: 6 }}
-                title={`${st.label}\n` + models.join(", ") + (on ? "" : `\nInactivo hace ${age}` + (stale ? " — se auto-borra a las 6 h de inactividad" : ""))}>
-                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}><span title={st.label}>{st.emoji}</span> {cli || "sin cliente"} · {hint || "—"} · {pzs}u{on ? "" : <span style={{ color: stale ? "#d08a5a" : "#5a6273" }}> · {stale ? "⏳" : ""}{age}</span>}</span>
+                title={models.join(", ") + (on ? "" : `\nInactivo hace ${age}` + (stale ? " — se auto-borra a las 6 h de inactividad" : ""))}>
+                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {hint || "—"} · {pzs}u{on ? "" : <span style={{ color: stale ? "#d08a5a" : "#5a6273" }}> · {stale ? "⏳" : ""}{age}</span>}</span>
                 <span style={s.chipX} onClick={() => deleteDraft(d.id)}>×</span>
               </span>
             );
@@ -2148,23 +2159,12 @@ export default function PriceDesk() {
             <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 8 }}>✕ Cerrar sin guardar</button>
           </div>
         )}
-        {!editingTs && (
+        {!editingTs && orderClientId && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", margin: "8px 0 2px" }}>
-            <span style={{ fontSize: 10.5, color: "#6b7385", marginRight: 2 }}>ETAPA:</span>
-            {ORDER_STAGES.map((st) => {
-              const on = stageInfo(order.stage).id === st.id;
-              return (
-                <button key={st.id} onClick={() => setOrderField("stage", st.id)}
-                  style={{ ...s.miniBtn, ...(on ? { background: "#1d2740", borderColor: "#3a5b8f", color: "#e8ecf3" } : { opacity: 0.7 }) }}
-                  title={st.label}>{st.emoji} {st.label}</button>
-              );
-            })}
-            {orderClientId && (
-              <span style={{ fontSize: 11, marginLeft: 4, color: selClient.cuentaCorriente ? "#8ee0a8" : "#e0b48e" }}
-                title={selClient.cuentaCorriente ? "Con cuenta corriente: envío directo, queda en la cuenta." : "Sin cuenta corriente: primero paga, después se envía."}>
-                {selClient.cuentaCorriente ? "🟢 con cuenta corriente" : "🟠 sin cuenta — cobra antes de enviar"}
-              </span>
-            )}
+            <span style={{ fontSize: 11, color: selClient.cuentaCorriente ? "#8ee0a8" : "#e0b48e" }}
+              title={selClient.cuentaCorriente ? "Con cuenta corriente: envío directo, queda en la cuenta." : "Sin cuenta corriente: primero paga, después se envía."}>
+              {selClient.cuentaCorriente ? "🟢 con cuenta corriente" : "🟠 sin cuenta — cobra antes de enviar"}
+            </span>
           </div>
         )}
         <div style={s.planTabs}>
