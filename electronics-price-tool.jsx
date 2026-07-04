@@ -74,6 +74,16 @@ const DRAFTS_KEY = "desk-drafts-v1";
 // Un pedido pendiente se auto-borra si queda SIN TOCARSE más de esto (por inactividad, no por creación).
 // El pedido ACTIVO nunca se borra. Cambiá el número si querés darle más/menos margen.
 const DRAFT_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
+// Etapas de un pedido (seguimiento del progreso). El id se guarda en order.stage.
+const ORDER_STAGES = [
+  { id: "cotizando", label: "Cotizando", emoji: "💬" },
+  { id: "negociando", label: "Negociando proveedor", emoji: "🤝" },
+  { id: "confirmada", label: "Confirmada", emoji: "✅" },
+  { id: "esperando_pago", label: "Esperando pago", emoji: "💰" },
+  { id: "a_enviar", label: "A enviar", emoji: "📦" },
+  { id: "enviada", label: "Enviada", emoji: "🚚" },
+];
+const stageInfo = (id) => ORDER_STAGES.find((x) => x.id === id) || ORDER_STAGES[0];
 
 function nextInvoiceNo(hist) {
   const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
@@ -106,7 +116,7 @@ function upsertWeekly(snaps, prices, lista) {
   const next = i >= 0 ? snaps.map((sn, k) => (k === i ? entry : sn)) : [...snaps, entry];
   return next.slice(-104);
 }
-function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "" }; }
+function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "", cuentaCorriente: false }; }
 function blankShip() { return { id: "", label: "", notify: "", direccion: "", telefono: "", contacto: "" }; }
 
 // Stamp every loaded cell at this cycle's Monday so it loads as "actualizado".
@@ -310,7 +320,7 @@ export default function PriceDesk() {
   const [orderQuery, setOrderQuery] = useState("");
   const [order, setOrder] = useState({
     items: [], invoiceNo: String(nextInvoiceNo(load(HIST_KEY, []))), date: today(), payment: "W/T", fob: "Miami",
-    salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "",
+    salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "", stage: "cotizando",
   });
   const [orderClientId, setOrderClientId] = useState(""); // selección en Órdenes
   const [orderShipId, setOrderShipId] = useState("");
@@ -359,6 +369,11 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(SNAP_KEY, JSON.stringify(snapshots)); } catch {} }, [snapshots]);
   useEffect(() => { try { localStorage.setItem(CLIENTS_KEY, JSON.stringify(clients)); } catch {} }, [clients]);
   useEffect(() => { try { localStorage.setItem(SHIPS_KEY, JSON.stringify(shippings)); } catch {} }, [shippings]);
+  // default de cuenta corriente para clientes sin el campo (una vez): Ojus / Intalper arrancan con CC.
+  useEffect(() => {
+    if (!clients.some((c) => c.cuentaCorriente === undefined)) return;
+    setClients((prev) => prev.map((c) => (c.cuentaCorriente === undefined ? { ...c, cuentaCorriente: /ojus|intalper/i.test(c.name || "") } : c)));
+  }, [clients]);
   useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
   useEffect(() => { try { localStorage.setItem(CAT_KEY, JSON.stringify(extraCatalog)); } catch {} }, [extraCatalog]);
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
@@ -1032,7 +1047,7 @@ export default function PriceDesk() {
   }
   // Volver a una orden nueva (limpia el modo edición).
   function resetOrder() {
-    const empty = { items: [], invoiceNo: String(nextInvoiceNo(invoiceHistory)), date: today(), payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "" };
+    const empty = { items: [], invoiceNo: String(nextInvoiceNo(invoiceHistory)), date: today(), payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "", stage: "cotizando" };
     orderRef.current = empty; setOrder(empty);
     setOrderClientId(""); setOrderShipId(""); setEditingTs(null); setDocType("factura");
     setActiveId(uid()); // pedido nuevo (los otros quedan en pendientes)
@@ -1324,7 +1339,7 @@ export default function PriceDesk() {
     }));
     const venta = lineas.reduce((a, l) => a + l.precio * l.cantidad, 0);
     const costo = lineas.reduce((a, l) => a + l.costo * l.cantidad, 0);
-    return { cliente: selClient.name || "(sin cliente)", fecha: o.date, entrega: o.deliveryAddr || "", margin_pct: marginNum, lineas, venta, costo, margen: venta - costo };
+    return { cliente: selClient.name || "(sin cliente)", tiene_cuenta_corriente: !!selClient.cuentaCorriente, etapa: stageInfo(o.stage).label, etapa_id: stageInfo(o.stage).id, fecha: o.date, entrega: o.deliveryAddr || "", margin_pct: marginNum, lineas, venta, costo, margen: venta - costo };
   }
   async function reviewOrder() {
     const summary = orderSummaryData();
@@ -1371,10 +1386,17 @@ export default function PriceDesk() {
       const list = drafts.map((d) => ({
         id: d.id, activo: d.id === activeId,
         cliente: clients.find((c) => c.id === d.clientId)?.name || "sin cliente",
+        etapa: stageInfo(d.order?.stage).label,
         modelos: [...new Set((d.order?.items || []).map((i) => i.sku))],
         piezas: (d.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0),
       }));
       return { activo: activeId, pedidos: list };
+    }
+    if (name === "set_order_stage") {
+      const st = ORDER_STAGES.find((x) => x.id === args.stage || x.label.toLowerCase() === String(args.stage || "").toLowerCase());
+      if (!st) return { ok: false, error: `Etapa desconocida: ${args.stage}. Válidas: ${ORDER_STAGES.map((x) => x.id).join(", ")}.` };
+      agentSetOrder((o) => ({ ...o, stage: st.id }));
+      return { ok: true, etapa: st.label };
     }
     if (name === "switch_order") {
       const inc = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
@@ -1519,11 +1541,11 @@ export default function PriceDesk() {
       if (!nm) return { ok: false, error: "Falta el nombre del cliente." };
       const ex = clients.find((c) => (c.name || "").toLowerCase() === nm.toLowerCase());
       if (ex) {
-        const upd = { ...ex, address: args.address ?? ex.address, ruc: args.ruc ?? ex.ruc, phone: args.phone ?? ex.phone };
+        const upd = { ...ex, address: args.address ?? ex.address, ruc: args.ruc ?? ex.ruc, phone: args.phone ?? ex.phone, cuentaCorriente: args.cuentaCorriente != null ? !!args.cuentaCorriente : ex.cuentaCorriente };
         setClients((prev) => prev.map((c) => (c.id === ex.id ? upd : c)));
         return { ok: true, actualizado: true, cliente: nm, id: ex.id };
       }
-      const nc = { id: "cl" + Date.now(), name: nm, address: args.address || "", ruc: args.ruc || "", phone: args.phone || "" };
+      const nc = { id: "cl" + Date.now(), name: nm, address: args.address || "", ruc: args.ruc || "", phone: args.phone || "", cuentaCorriente: !!args.cuentaCorriente };
       setClients((prev) => [...prev, nc]);
       return { ok: true, creado: true, cliente: nm, id: nc.id };
     }
@@ -2102,10 +2124,11 @@ export default function PriceDesk() {
             const idle = Date.now() - (d.ts || 0);
             const age = idle < 3600e3 ? `${Math.max(1, Math.round(idle / 60e3))}m` : idle < 86400e3 ? `${Math.floor(idle / 3600e3)}h` : `${Math.floor(idle / 86400e3)}d`;
             const stale = !on && idle > DRAFT_TTL_MS * 0.66; // acercándose al auto-borrado (6 h)
+            const st = stageInfo(d.order?.stage);
             return (
               <span key={d.id} style={{ ...s.acctTab, ...(on ? s.acctTabOn : {}), ...(stale ? { opacity: 0.6 } : {}), display: "inline-flex", gap: 6 }}
-                title={models.join(", ") + (on ? "" : `\nInactivo hace ${age}` + (stale ? " — se auto-borra a las 6 h de inactividad" : ""))}>
-                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}>{cli || "sin cliente"} · {hint || "—"} · {pzs}u{on ? "" : <span style={{ color: stale ? "#d08a5a" : "#5a6273" }}> · {stale ? "⏳" : ""}{age}</span>}</span>
+                title={`${st.label}\n` + models.join(", ") + (on ? "" : `\nInactivo hace ${age}` + (stale ? " — se auto-borra a las 6 h de inactividad" : ""))}>
+                <span onClick={() => switchOrder(d.id)} style={{ cursor: "pointer" }}><span title={st.label}>{st.emoji}</span> {cli || "sin cliente"} · {hint || "—"} · {pzs}u{on ? "" : <span style={{ color: stale ? "#d08a5a" : "#5a6273" }}> · {stale ? "⏳" : ""}{age}</span>}</span>
                 <span style={s.chipX} onClick={() => deleteDraft(d.id)}>×</span>
               </span>
             );
@@ -2118,6 +2141,25 @@ export default function PriceDesk() {
             ✏️ Estás editando una factura ya generada — al guardar se actualiza esa misma (recalcula cuentas y PnL). No afecta tus pedidos pendientes.
             <span style={{ flex: 1 }} />
             <button onClick={resetOrder} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 8 }}>✕ Cerrar sin guardar</button>
+          </div>
+        )}
+        {!editingTs && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", margin: "8px 0 2px" }}>
+            <span style={{ fontSize: 10.5, color: "#6b7385", marginRight: 2 }}>ETAPA:</span>
+            {ORDER_STAGES.map((st) => {
+              const on = stageInfo(order.stage).id === st.id;
+              return (
+                <button key={st.id} onClick={() => setOrderField("stage", st.id)}
+                  style={{ ...s.miniBtn, ...(on ? { background: "#1d2740", borderColor: "#3a5b8f", color: "#e8ecf3" } : { opacity: 0.7 }) }}
+                  title={st.label}>{st.emoji} {st.label}</button>
+              );
+            })}
+            {orderClientId && (
+              <span style={{ fontSize: 11, marginLeft: 4, color: selClient.cuentaCorriente ? "#8ee0a8" : "#e0b48e" }}
+                title={selClient.cuentaCorriente ? "Con cuenta corriente: envío directo, queda en la cuenta." : "Sin cuenta corriente: primero paga, después se envía."}>
+                {selClient.cuentaCorriente ? "🟢 con cuenta corriente" : "🟠 sin cuenta — cobra antes de enviar"}
+              </span>
+            )}
           </div>
         )}
         <div style={s.planTabs}>
@@ -2316,6 +2358,10 @@ export default function PriceDesk() {
               <textarea placeholder="Dirección (varias líneas)" value={clientForm.address} onChange={(e) => setClientField("address", e.target.value)} rows={2} style={s.invArea} />
               <input placeholder="RUC" value={clientForm.ruc} onChange={(e) => setClientField("ruc", e.target.value)} style={s.invInput} />
               <input placeholder="Teléfono" value={clientForm.phone} onChange={(e) => setClientField("phone", e.target.value)} style={s.invInput} />
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 12, color: "#cfd6e4", cursor: "pointer" }} title="Con cuenta corriente: se envía directo y queda en la cuenta. Sin cuenta: paga primero y después se envía.">
+                <input type="checkbox" checked={!!clientForm.cuentaCorriente} onChange={(e) => setClientField("cuentaCorriente", e.target.checked)} />
+                Tiene cuenta corriente
+              </label>
               <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
                 <button onClick={saveClient} style={s.toolBtn}>{clientForm.id ? "Actualizar" : "Guardar"} cliente</button>
                 {clientForm.id && <button onClick={deleteClient} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}
