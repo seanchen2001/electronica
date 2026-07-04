@@ -338,7 +338,7 @@ export default function PriceDesk() {
   const [askMode, setAskMode] = useState("ask"); // "ask" | "mark" (mobile)
   // chatbox unificado (desktop): un solo input, el AI descubre el intent (o selector manual)
   const [chatText, setChatText] = useState("");
-  const [chatMode, setChatMode] = useState("auto"); // "auto" | "agente" | "ask" | "parse" | "mark"
+  const [chatMode, setChatMode] = useState("agente"); // el chatbox de escritorio ahora es solo el agente (AI)
   const [chatOpen, setChatOpen] = useState(true);
   const [chatNote, setChatNote] = useState(null); // {err, text} — feedback del ruteo de intent
   const [chatImage, setChatImage] = useState(null); // imagen adjunta al mensaje (File), con preview
@@ -1593,24 +1593,10 @@ export default function PriceDesk() {
         <span>💬 ASISTENTE</span>
         <button onClick={() => setChatOpen(false)} title="Colapsar hacia la derecha" style={s.chatCollapse}>▶</button>
       </div>
-      <div style={s.modeTabs}>
-        {[["agente", "🤖 Agente"], ["auto", "Auto"], ["ask", "Preguntar"], ["parse", "Cargar precios"], ["mark", "Marcar"]].map(([m, label]) => (
-          <button key={m} onClick={() => setChatMode(m)} style={{ ...s.planTab, ...(chatMode === m ? s.planTabOn : {}) }}>{label}</button>
-        ))}
-      </div>
-      {(chatMode === "parse" || chatMode === "auto") && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "8px 0", fontSize: 11, color: "#9aa4b2" }}>
-          <span>Proveedor destino:</span>
-          <select value={parseSupplier} onChange={(e) => setParseSupplier(e.target.value)} style={{ ...s.select, flex: 1 }}>
-            <option value="">—</option>
-            {supplierList.map((sp) => <option key={sp} value={sp}>{sp}</option>)}
-          </select>
-        </div>
-      )}
 
       {/* resultados: crecen y ocupan el alto disponible */}
       <div style={s.chatResults} ref={chatScrollRef}>
-        {chatMode === "agente" ? (
+        {(
           <>
             {agentLog.length > 0 && (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1628,25 +1614,11 @@ export default function PriceDesk() {
             {agentBusy && <div style={{ ...s.agTool, display: "flex", alignItems: "center", gap: 6 }}><span style={s.spinner} /> generando…</div>}
             {agentLog.length === 0 && !agentBusy && (
               <div style={s.chatEmpty}>
-                <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ee0a8" }}>🤖 Agente de órdenes</b> — armá una orden de punta a punta:</p>
-                <p style={{ margin: "4px 0" }}>“El cliente Intalper quiere 20 S26 Ultra 256 y 40 S25 Ultra 256, buscá el mejor proveedor y armá la orden.”</p>
-                <p style={{ margin: "4px 0", color: "#8b94a7" }}>Elige el proveedor más barato por cantidad, arma las líneas, y cuando confirmás genera la factura y los remitos.</p>
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            {chatNote && <div style={chatNote.err ? s.errorMsg : s.okMsg}>{chatNote.text}</div>}
-            {answerErr && <div style={s.errorMsg}>{answerErr}</div>}
-            {answer && <div style={s.answerCard}>{answer}</div>}
-            {parseMsg && <div style={parseMsg.err ? s.errorMsg : s.okMsg}>{parseMsg.text}{parseMsg.skus?.length ? <span style={s.okSkus}> ({parseMsg.skus.join(", ")})</span> : null}</div>}
-            {markMsg && <div style={markMsg.err ? s.errorMsg : s.okMsg}>{markMsg.text}</div>}
-            {!chatNote && !answerErr && !answer && !parseMsg && !markMsg && (
-              <div style={s.chatEmpty}>
-                <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ea0bf" }}>Escribí lo que necesites</b> y el asistente detecta qué querés:</p>
+                <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ee0a8" }}>🤖 Agente</b> — pedile lo que necesites, hace todo:</p>
+                <p style={{ margin: "4px 0" }}>🧾 <b>Órdenes</b> — “Intalper quiere 20 S26 Ultra 256 y 40 S25 Ultra 256, buscá el mejor proveedor y armá la orden.”</p>
                 <p style={{ margin: "4px 0" }}>💬 <b>Preguntar</b> — “¿dónde está más competitivo VITEL esta semana?”</p>
-                <p style={{ margin: "4px 0" }}>📥 <b>Cargar precios</b> — pegá o subí 📷 una cotización de un proveedor.</p>
-                <p style={{ margin: "4px 0" }}>✅ <b>Marcar</b> — “marcá el S26 ultra y el A56” para armar la cotización.</p>
+                <p style={{ margin: "4px 0" }}>✅ <b>Marcar</b> — “marcá el S26 Ultra y el A56 para la cotización.”</p>
+                <p style={{ margin: "4px 0" }}>📥 <b>Cargar precios</b> — pegá o adjuntá 📷 una cotización de un proveedor.</p>
               </div>
             )}
           </>
@@ -1658,7 +1630,7 @@ export default function PriceDesk() {
         <textarea value={chatText} onChange={(e) => setChatText(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busyChat) submitChat(); } }}
           onPaste={onChatPaste} rows={4}
-          placeholder="Escribí una pregunta, pegá una cotización o pedí marcar modelos… (Enter envía)"
+          placeholder="Pedile al agente: armar una orden, preguntar, marcar modelos o cargar precios… (Enter envía)"
           style={s.chatInput} />
         {chatImage && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: "#9aa4b2" }}>
