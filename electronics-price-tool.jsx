@@ -322,6 +322,7 @@ export default function PriceDesk() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [showSteps, setShowSteps] = useState(false); // ver el proceso (herramientas) del agente
   const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
+  const [pendingDelete, setPendingDelete] = useState(null); // {ts, no, cliente, total} para confirmar borrado de factura vía agente
   const [pendingPriceLoad, setPendingPriceLoad] = useState(null); // {supplier, rows, newModels} para confirmar carga de precios
   const lastQuoteRef = useRef({ text: "", images: [] }); // último mensaje (para load_prices)
   const agentContents = useRef([]); // conversación multi-turno del agente
@@ -1513,7 +1514,28 @@ export default function PriceDesk() {
       setPendingPriceLoad({ supplier, rows, newModels });
       return { status: "needs_confirmation", supplier, cargados: rows.length, con_variacion_grande: rows.filter((r) => r.big).map((r) => `${r.sku} (${r.pct}%)`), nuevos: newModels.map((m) => m.name), mensaje: "Le mostré la previsualización al usuario para que confirme antes de guardar." };
     }
+    if (name === "send_document") {
+      const no = String(args.invoiceNo || "").trim();
+      const rec = invoiceHistory.find((h) => String(h.no) === no) || (no ? null : invoiceHistory[0]);
+      if (!rec) return { ok: false, error: no ? `No encontré la factura #${no} en el historial.` : "No hay facturas en el historial.", disponibles: invoiceHistory.slice(0, 12).map((h) => h.no) };
+      const kind = /remit/i.test(args.kind || "") ? "remitos" : "factura";
+      await downloadFromHistory(rec, kind);
+      return { ok: true, enviado: kind, factura: rec.no, mensaje: `Descargué ${kind === "remitos" ? "los remitos por proveedor" : "la factura"} #${rec.no} (${rec.client || "—"}). Ya la tenés para reenviar.` };
+    }
+    if (name === "delete_invoice") {
+      const no = String(args.invoiceNo || "").trim();
+      const rec = invoiceHistory.find((h) => String(h.no) === no);
+      if (!rec) return { ok: false, error: `No encontré la factura #${no}.`, disponibles: invoiceHistory.slice(0, 12).map((h) => h.no) };
+      setPendingDelete({ ts: rec.ts, no: rec.no, cliente: rec.client, total: rec.total });
+      return { status: "needs_confirmation", mensaje: `Le pedí al usuario que confirme borrar la factura #${rec.no} (${rec.client || "—"}, ${money(rec.total)}). Al borrar se recalculan cuentas y PnL.` };
+    }
     return { ok: false, error: "herramienta desconocida" };
+  }
+  function confirmDeleteInvoice() {
+    const d = pendingDelete; setPendingDelete(null);
+    if (!d) return;
+    setInvoiceHistory((h) => h.filter((x) => x.ts !== d.ts));
+    setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré la factura #${d.no}. Se recalcularon cuentas y PnL.` }]);
   }
   async function runAgent(userText, file = null) {
     if (!apiKey.trim()) { setAgentLog((l) => [...l, { role: "system", text: "Cargá la contraseña / API key primero." }]); return; }
@@ -2602,6 +2624,23 @@ export default function PriceDesk() {
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
               <button onClick={() => setPendingAgentCommit(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
               <button onClick={confirmAgentCommit} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>✓ Confirmar y generar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: confirmar borrado de factura pedido por el agente */}
+      {pendingDelete && (
+        <div style={s.modalOverlay} onClick={() => setPendingDelete(null)}>
+          <div style={{ ...s.modalCard, width: "min(460px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ ...s.newHead, color: "#f0a0a0" }}>🗑️ ¿Borrar la factura #{pendingDelete.no}?</div>
+            <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 10 }}>
+              Cliente: <b>{pendingDelete.cliente || "—"}</b> · Total: <b style={{ color: "#fbbf24" }}>{money(pendingDelete.total)}</b>
+              <div style={{ color: "#8b94a7", marginTop: 6 }}>Se recalculan cuentas corrientes y PnL. No se puede deshacer.</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setPendingDelete(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
+              <button onClick={confirmDeleteInvoice} style={{ ...s.pdfBtn, border: "none", cursor: "pointer", background: "#b91c1c" }}>🗑️ Borrar factura</button>
             </div>
           </div>
         </div>
