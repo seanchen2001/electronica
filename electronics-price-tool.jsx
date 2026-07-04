@@ -1514,6 +1514,56 @@ export default function PriceDesk() {
       setPendingPriceLoad({ supplier, rows, newModels });
       return { status: "needs_confirmation", supplier, cargados: rows.length, con_variacion_grande: rows.filter((r) => r.big).map((r) => `${r.sku} (${r.pct}%)`), nuevos: newModels.map((m) => m.name), mensaje: "Le mostré la previsualización al usuario para que confirme antes de guardar." };
     }
+    if (name === "add_client") {
+      const nm = String(args.name || "").trim();
+      if (!nm) return { ok: false, error: "Falta el nombre del cliente." };
+      const ex = clients.find((c) => (c.name || "").toLowerCase() === nm.toLowerCase());
+      if (ex) {
+        const upd = { ...ex, address: args.address ?? ex.address, ruc: args.ruc ?? ex.ruc, phone: args.phone ?? ex.phone };
+        setClients((prev) => prev.map((c) => (c.id === ex.id ? upd : c)));
+        return { ok: true, actualizado: true, cliente: nm, id: ex.id };
+      }
+      const nc = { id: "cl" + Date.now(), name: nm, address: args.address || "", ruc: args.ruc || "", phone: args.phone || "" };
+      setClients((prev) => [...prev, nc]);
+      return { ok: true, creado: true, cliente: nm, id: nc.id };
+    }
+    if (name === "add_shipping") {
+      const label = String(args.label || args.notify || "").trim();
+      if (!label && !args.direccion) return { ok: false, error: "Falta al menos etiqueta/notify o dirección." };
+      const ns = { id: "sh" + Date.now(), label: args.label || "", notify: args.notify || "", direccion: args.direccion || "", telefono: args.telefono || "", contacto: args.contacto || "" };
+      setShippings((prev) => [...prev, ns]);
+      return { ok: true, envio: ns.label || ns.direccion, id: ns.id };
+    }
+    if (name === "add_supplier") {
+      const nm = String(args.name || "").trim();
+      if (!nm) return { ok: false, error: "Falta el nombre del proveedor." };
+      if (supplierList.some((s) => s.toLowerCase() === nm.toLowerCase())) return { ok: true, existe: true, proveedor: nm };
+      setSupplierList((l) => [...l, nm]);
+      return { ok: true, creado: true, proveedor: nm };
+    }
+    if (name === "supplier_ask") {
+      const m = args.minMarginPct != null ? Number(args.minMarginPct) : marginNum;
+      const r2 = (n) => Math.round(n * 100) / 100;
+      const items = await Promise.all((args.items || []).map(async (it) => {
+        const sku = await resolveSkuSmart(it.sku); const qty = Number(it.qty) || 1;
+        if (!sku) return { modelo: it.sku, en_catalogo: false };
+        const bs = bestSuppliers(sku, qty);
+        const costoActual = bs?.mejor?.costo ?? null;
+        const target = it.targetClientPrice != null ? Number(it.targetClientPrice) : null;
+        const costoObjetivo = target != null ? r2(target / (1 + m / 100)) : null;
+        const bajar = costoActual != null && costoObjetivo != null ? r2(costoActual - costoObjetivo) : null;
+        return {
+          modelo: sku, cantidad: qty,
+          proveedor_actual: bs?.mejor?.proveedor ?? null, costo_actual: costoActual,
+          precio_objetivo_cliente: target, margen_min_pct: m,
+          costo_objetivo: costoObjetivo,            // lo que necesitás que te deje el proveedor
+          pedir_baja_de: bajar,                     // cuánto pedirle que baje (≤0 = ya te alcanza)
+          ya_alcanza: bajar != null ? bajar <= 0 : null,
+          alternativa: bs?.ranking?.[1] ? { proveedor: bs.ranking[1].supplier, costo: bs.ranking[1].cost } : null,
+        };
+      }));
+      return { items, margen_min_pct: m, nota: "costo_objetivo = precio_cliente / (1+margen). pedir_baja_de = cuánto pedirle al proveedor que baje su costo. Si ya_alcanza=true, no hace falta negociar. Usá la alternativa como palanca." };
+    }
     if (name === "send_document") {
       const no = String(args.invoiceNo || "").trim();
       const rec = invoiceHistory.find((h) => String(h.no) === no) || (no ? null : invoiceHistory[0]);
