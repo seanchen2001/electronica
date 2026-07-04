@@ -1414,6 +1414,11 @@ export default function PriceDesk() {
       const inc = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
       const nm = (x) => clients.find((c) => c.id === x.clientId)?.name || "sin cliente";
       const summ = (x) => ({ id: x.id, cliente: nm(x), modelos: [...new Set((x.order?.items || []).map((i) => i.sku))], piezas: (x.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0) });
+      if (args.all) { // borrar TODOS los pedidos pendientes
+        const n = drafts.length;
+        setDrafts([]); resetOrder();
+        return { ok: true, borrados: n, mensaje: `Borré ${n} pedido(s) pendiente(s). Quedó todo limpio.` };
+      }
       let cands = drafts;
       if (args.id) cands = drafts.filter((x) => x.id === args.id);
       else {
