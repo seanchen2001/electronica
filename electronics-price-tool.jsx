@@ -47,6 +47,7 @@ import {
   resolveSkuSmart as resolveSkuSmartAI,
   whatsappQuoteText as whatsappQuoteTextPure,
 } from "./lib/ai.js";
+import { computeAccounts, canonName } from "./lib/accounts.js";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -843,37 +844,13 @@ export default function PriceDesk() {
   function draftClientName(d) { return clients.find((c) => c.id === d.clientId)?.name || d.order?.items?.[0]?.sku || "sin cliente"; }
 
   // ---- cuentas corrientes ----
-  // Débito suma al saldo, Crédito resta. Cliente: saldo = lo que nos debe. Proveedor: saldo = lo que le debemos.
-  // Cargos (venta/compra) DERIVADOS de las facturas; pagos y gastos son manuales. Alias fusiona cuentas.
-  function canon(name) { const n = (name || "—").trim() || "—"; return aliases[n] || n; }
+  // El cálculo vive en lib/accounts.js (computeAccounts); acá solo se memoiza para el lado activo.
+  function canon(name) { return canonName(aliases, name); }
 
-  const accounts = useMemo(() => {
-    const byParty = {};
-    // cargo = aumenta lo adeudado (venta al cliente / compra al proveedor); pago = lo reduce
-    const add = (party, m) => { const p = canon(party); (byParty[p] ||= []).push({ ...m, when: parseDMY(m.date, m.ts).getTime() }); };
-    for (const f of invoiceHistory) {
-      if (f.type !== "factura") continue;
-      if (ledgerSide === "client") {
-        add(f.client || "—", { key: `f-${f.no}`, ts: f.ts, date: f.date, concept: `Factura #${f.no}`, ref: f.no, cargo: Number(f.total) || 0, pago: 0, derived: true });
-      } else {
-        for (const [sp, c] of Object.entries(f.supplierCosts || {})) add(sp, { key: `f-${f.no}-${sp}`, ts: f.ts, date: f.date, concept: `Compra fact. #${f.no}`, ref: f.no, cargo: Number(c) || 0, pago: 0, derived: true });
-      }
-    }
-    for (const e of ledger) {
-      if (e.side !== ledgerSide) continue;
-      if (e.type === "cargo" && e.ref) continue; // cargos automáticos viejos → se derivan
-      const pago = e.type === "pago";
-      add(e.party, { key: e.id, id: e.id, ts: e.ts, date: e.date, concept: e.concept, ref: e.ref || "", cargo: pago ? 0 : (Number(e.amount) || 0), pago: pago ? (Number(e.amount) || 0) : 0, derived: false });
-    }
-    const out = {};
-    for (const [party, movs] of Object.entries(byParty)) {
-      movs.sort((a, b) => (a.when - b.when) || (a.ts || 0) - (b.ts || 0)); // por fecha para el saldo corriente
-      let saldo = 0;
-      const rows = movs.map((m) => { saldo += (m.cargo || 0) - (m.pago || 0); return { ...m, saldo }; });
-      out[party] = { party, rows, saldo };
-    }
-    return out;
-  }, [invoiceHistory, ledger, ledgerSide, aliases]);
+  const accounts = useMemo(
+    () => computeAccounts({ invoiceHistory, ledger, aliases }, ledgerSide),
+    [invoiceHistory, ledger, ledgerSide, aliases]
+  );
 
   const accountNames = useMemo(() => Object.keys(accounts).sort((a, b) => a.localeCompare(b)), [accounts]);
   const currentAccount = accounts[canon(ledgerAccount)] || null;
@@ -1404,6 +1381,54 @@ export default function PriceDesk() {
         run: () => { setInvoiceHistory((h) => h.filter((x) => x.ts !== rec.ts)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré la factura #${rec.no}. Se recalcularon cuentas y PnL.` }]); },
       });
       return { status: "needs_confirmation", mensaje: `Le pedí al usuario que confirme borrar la factura #${rec.no} (${rec.client || "—"}, ${money(rec.total)}).` };
+    }
+    // ---- CUENTAS: consultar saldos y registrar movimientos por chat ----
+    if (name === "list_accounts") {
+      const side = /prov|supp/i.test(String(args.side || "")) ? "supplier" : "client";
+      const accs = computeAccounts({ invoiceHistory, ledger, aliases }, side);
+      const cuentas = Object.values(accs)
+        .map((a) => ({ cuenta: a.party, saldo: +a.saldo.toFixed(2) }))
+        .sort((x, y) => y.saldo - x.saldo);
+      return {
+        side, perspectiva: side === "client" ? "saldo = lo que NOS DEBE cada cliente" : "saldo = lo que LE DEBEMOS a cada proveedor",
+        cuentas, total: +cuentas.reduce((a, c) => a + c.saldo, 0).toFixed(2),
+      };
+    }
+    if (name === "account_balance") {
+      const side = /prov|supp/i.test(String(args.side || "")) ? "supplier" : "client";
+      const accs = computeAccounts({ invoiceHistory, ledger, aliases }, side);
+      const q = canon(String(args.party || "").trim()).toLowerCase();
+      const hit = Object.keys(accs).find((n) => n.toLowerCase() === q) || Object.keys(accs).find((n) => n.toLowerCase().includes(q));
+      if (!q || !hit) return { ok: false, error: `No encontré la cuenta "${args.party}" del lado ${side}.`, cuentas: Object.keys(accs) };
+      const acc = accs[hit];
+      return {
+        cuenta: acc.party, side, saldo: +acc.saldo.toFixed(2),
+        perspectiva: side === "client" ? "saldo = lo que NOS DEBE" : "saldo = lo que LE DEBEMOS",
+        ultimos_movimientos: acc.rows.slice(-10).map((m) => ({ fecha: m.date, concepto: m.concept, ref: m.ref || "", cargo: m.cargo || 0, pago: m.pago || 0, saldo: +m.saldo.toFixed(2) })),
+      };
+    }
+    if (name === "add_ledger_entry") {
+      const side = /prov|supp/i.test(String(args.side || "")) ? "supplier" : "client";
+      const party = canon(String(args.party || "").trim());
+      if (!party || party === "—") return { ok: false, error: "Falta la parte (cliente/proveedor) del movimiento." };
+      const amt = Number(args.amount) || 0;
+      if (amt <= 0) return { ok: false, error: "El monto tiene que ser mayor a 0." };
+      const type = ["pago", "gasto", "cargo"].includes(args.type) ? args.type : "pago";
+      // mismo shape que registerPay (el form manual de la pestaña Cuentas)
+      const entry = {
+        id: uid(), ts: Date.now(), side, party,
+        type, amount: amt, concept: String(args.concept || "").trim() || (type === "pago" ? "Pago" : type === "gasto" ? "Gasto envío proveedor" : "Cargo"),
+        date: args.date || today(), ref: "",
+      };
+      setLedger((lg) => [entry, ...lg]);
+      const accs = computeAccounts({ invoiceHistory, ledger: [entry, ...ledger], aliases }, side);
+      const saldo = accs[party]?.saldo;
+      setAgentLog((l) => [...l, { role: "system", text: `💰 Registré ${type} de ${money(amt)} en la cuenta de ${party}.` }]);
+      return {
+        ok: true, movimiento: { party, side, type, amount: amt, concept: entry.concept, date: entry.date },
+        nuevo_saldo: saldo != null ? +saldo.toFixed(2) : null,
+        nota: "Aplicado directo (reversible borrando la entrada en la pestaña Cuentas).",
+      };
     }
     return { ok: false, error: "herramienta desconocida" };
   }
