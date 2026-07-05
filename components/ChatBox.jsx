@@ -1,0 +1,76 @@
+import React from "react";
+import styles from "../styles.js";
+
+// Chatbox unificado de escritorio (a la derecha, colapsable): el log del agente + input.
+export default function ChatBox({
+  chatOpen, setChatOpen, chatScrollRef,
+  agentLog, showSteps, setShowSteps, resetAgent, agentBusy,
+  chatText, setChatText, chatImage, setChatImage, onChatPaste, submitChat, busyChat,
+}) {
+  const s = styles;
+  return (
+    <aside style={{ ...s.chatBox, transform: chatOpen ? "none" : "translateX(100%)" }}>
+      <div style={s.chatHead}>
+        <span>💬 ASISTENTE</span>
+        <button onClick={() => setChatOpen(false)} title="Colapsar hacia la derecha" style={s.chatCollapse}>▶</button>
+      </div>
+
+      {/* resultados: crecen y ocupan el alto disponible */}
+      <div style={s.chatResults} ref={chatScrollRef}>
+        {(
+          <>
+            {agentLog.length > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <label style={{ fontSize: 10.5, color: "#6b7385", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input type="checkbox" checked={showSteps} onChange={(e) => setShowSteps(e.target.checked)} /> ver pasos
+                </label>
+                <button onClick={resetAgent} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>Nueva conversación</button>
+              </div>
+            )}
+            {agentLog.filter((m) => showSteps || m.role !== "tool").map((m, i) => (
+              <div key={i} style={
+                m.role === "you" ? s.agYou : m.role === "agent" ? s.agBot : m.role === "tool" ? s.agTool : s.agSys
+              }>{m.text}</div>
+            ))}
+            {agentBusy && <div style={{ ...s.agTool, display: "flex", alignItems: "center", gap: 6 }}><span style={s.spinner} /> generando…</div>}
+            {agentLog.length === 0 && !agentBusy && (
+              <div style={s.chatEmpty}>
+                <p style={{ margin: "0 0 8px" }}><b style={{ color: "#8ee0a8" }}>🤖 Agente</b> — pedile lo que necesites, hace todo:</p>
+                <p style={{ margin: "4px 0" }}>🧾 <b>Órdenes</b> — “Intalper quiere 20 S26 Ultra 256 y 40 S25 Ultra 256, buscá el mejor proveedor y armá la orden.”</p>
+                <p style={{ margin: "4px 0" }}>💬 <b>Preguntar</b> — “¿dónde está más competitivo VITEL esta semana?”</p>
+                <p style={{ margin: "4px 0" }}>✅ <b>Marcar</b> — “marcá el S26 Ultra y el A56 para la cotización.”</p>
+                <p style={{ margin: "4px 0" }}>📥 <b>Cargar precios</b> — pegá o adjuntá 📷 una cotización de un proveedor.</p>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* input abajo (estilo chat) */}
+      <div style={s.chatInputWrap}>
+        <textarea value={chatText} onChange={(e) => setChatText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busyChat) submitChat(); } }}
+          onPaste={onChatPaste} rows={4}
+          placeholder="Pedile al agente: armar una orden, preguntar, marcar modelos o cargar precios… (Enter envía)"
+          style={s.chatInput} />
+        {chatImage && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: "#9aa4b2" }}>
+            <img alt="adjunta" src={URL.createObjectURL(chatImage)} style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, border: "1px solid #2a3346" }} />
+            <span>imagen adjunta</span>
+            <span style={s.chipX} onClick={() => setChatImage(null)}>×</span>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <label style={{ ...s.imgBtn, cursor: busyChat ? "default" : "pointer" }} title="Adjuntar screenshot (podés agregarle texto antes de enviar)">📷
+            <input type="file" accept="image/*" disabled={busyChat} style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) setChatImage(f); e.target.value = ""; }} />
+          </label>
+          <button onClick={() => submitChat()} disabled={busyChat} style={{ ...s.askBtn, flex: 1, ...(busyChat ? s.busy : {}) }}>
+            {busyChat ? "…" : "Enviar"}
+          </button>
+        </div>
+        <div style={s.askHint}>Enter envía · Shift+Enter salto de línea · 📷/Ctrl+V adjunta.</div>
+      </div>
+    </aside>
+  );
+}
