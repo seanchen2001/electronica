@@ -26,6 +26,7 @@ import OrdenesView from "./components/OrdenesView.jsx";
 import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
+  TRASH_KEY, TRASH_TTL_MS,
   DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, COMPANY, supplierCode, MONTHS_ES,
 } from "./lib/constants.js";
 import {
@@ -50,6 +51,7 @@ import {
 import { computeAccounts, canonName } from "./lib/accounts.js";
 import { analyticsData, analyticsSummary } from "./lib/analytics.js";
 import AnaliticaView from "./components/AnaliticaView.jsx";
+import TrashPanel from "./components/TrashPanel.jsx";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -123,6 +125,11 @@ export default function PriceDesk() {
   const [orderShipId, setOrderShipId] = useState("");
   const [editingTs, setEditingTs] = useState(null); // ts del registro del Historial que se está editando
   const [drafts, setDrafts] = useState(() => load(DRAFTS_KEY, [])); // pedidos pendientes: [{id, order, clientId, shipId, ts}]
+  // papelero: copia completa de lo borrado (24 h) — items {id, kind, data, deletedAt}
+  const [trash, setTrash] = useState(() => load(TRASH_KEY, []));
+  const [undoToast, setUndoToast] = useState(null); // { label, ids } — toast "Borrado X · Deshacer"
+  const [trashOpen, setTrashOpen] = useState(false); // panel Papelero
+  const undoTimer = useRef();
   const [activeId, setActiveId] = useState(() => uid()); // id del pedido activo
   // ---- agente ----
   const [agentLog, setAgentLog] = useState([]); // [{role, text}]
@@ -179,6 +186,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
   useEffect(() => { try { localStorage.setItem(PHIST_KEY, JSON.stringify(priceHistory)); } catch {} }, [priceHistory]);
   useEffect(() => { try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts)); } catch {} }, [drafts]);
+  useEffect(() => { try { localStorage.setItem(TRASH_KEY, JSON.stringify(trash)); } catch {} }, [trash]);
 
   // ---- sync con la base (Supabase, opcional) ----
   const dbReady = useRef(false);
@@ -231,6 +239,7 @@ export default function PriceDesk() {
           setPriceHistory((h) => resolve(d.priceHistory, h, "priceHistory"));
         }
         setDrafts((x) => resolve(d.drafts, x, "drafts"));
+        setTrash((x) => resolve(d.trash, x, "trash"));
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
     finally { dbReady.current = true; }
@@ -263,6 +272,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
   useEffect(() => { syncUp("drafts", drafts); }, [drafts]);
+  useEffect(() => { syncUp("trash", trash); }, [trash]);
   // auto-guardar el pedido activo (si tiene items) en la lista de pendientes
   useEffect(() => {
     if (!activeId || !order.items.length || editingTs) return; // al editar una factura vieja NO tocamos los pedidos pendientes
@@ -287,6 +297,58 @@ export default function PriceDesk() {
     const t = setInterval(sweep, 15 * 60 * 1000);
     return () => clearInterval(t);
   }, [activeId]);
+  // ---- papelero (deshacer borrado) ----
+  // auto-purga: lo borrado hace más de TRASH_TTL_MS (24 h) se va solo. Corre al abrir y cada 15 min.
+  useEffect(() => {
+    const purge = () => setTrash((t) => {
+      const cutoff = Date.now() - TRASH_TTL_MS;
+      const kept = t.filter((x) => (x.deletedAt || 0) > cutoff);
+      return kept.length === t.length ? t : kept;
+    });
+    purge();
+    const t = setInterval(purge, 15 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+  // guarda una copia completa ANTES de borrar; devuelve el item del papelero
+  function pushTrash(kind, data) {
+    const item = { id: uid(), kind, data: clone(data), deletedAt: Date.now() };
+    setTrash((t) => [item, ...t].slice(0, 200));
+    return item;
+  }
+  // toast "Borrado X · Deshacer" (~10 s)
+  function showUndo(label, items) {
+    setUndoToast({ label, ids: items.map((x) => x.id) });
+    clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setUndoToast(null), 10000);
+  }
+  // helper único (UI + agente): registra en el papelero y muestra el toast
+  function trashAndUndo(kind, data, label) { showUndo(label, [pushTrash(kind, data)]); }
+  // reinserta según kind en la colección correcta (respetando ids/orden por ts)
+  function restoreTrash(id) {
+    const item = trash.find((x) => x.id === id);
+    if (!item) return;
+    const d = item.data;
+    if (item.kind === "invoice") setInvoiceHistory((h) => (h.some((x) => x.ts === d.ts) ? h : [d, ...h].sort((a, b) => (b.ts || 0) - (a.ts || 0))));
+    else if (item.kind === "draft") setDrafts((ds) => (ds.some((x) => x.id === d.id) ? ds : [d, ...ds]));
+    else if (item.kind === "client") setClients((prev) => (prev.some((x) => x.id === d.id) ? prev : [...prev, d]));
+    else if (item.kind === "shipping") setShippings((prev) => (prev.some((x) => x.id === d.id) ? prev : [...prev, d]));
+    else if (item.kind === "supplier") setSupplierList((l) => (l.includes(d) ? l : [...l, d]));
+    else if (item.kind === "ledger") setLedger((lg) => (lg.some((x) => x.id === d.id) ? lg : [d, ...lg].sort((a, b) => (b.ts || 0) - (a.ts || 0))));
+    setTrash((t) => t.filter((x) => x.id !== id));
+    setUndoToast((u) => (u && u.ids.includes(id) ? (u.ids.length > 1 ? { ...u, ids: u.ids.filter((i) => i !== id) } : null) : u));
+  }
+  function restoreMany(ids) { ids.forEach(restoreTrash); }
+  // etiqueta legible de un item del papelero (para el toast y el panel)
+  function trashLabel(item) {
+    const d = item.data;
+    if (item.kind === "invoice") return `Factura #${d.no} (${d.client || "—"})`;
+    if (item.kind === "draft") return `Pedido ${clients.find((c) => c.id === d.clientId)?.name || d.order?.items?.[0]?.sku || "sin cliente"}`;
+    if (item.kind === "client") return `Cliente ${d.name}`;
+    if (item.kind === "shipping") return `Envío ${d.label || d.notify || ""}`;
+    if (item.kind === "supplier") return `Proveedor ${d}`;
+    if (item.kind === "ledger") return `Movimiento ${d.type} ${money(Number(d.amount) || 0)} (${d.party})`;
+    return item.kind;
+  }
   // auto-guardar el snapshot de la semana actual unos segundos después de editar precios
   const weekTimer = useRef();
   useEffect(() => {
@@ -564,7 +626,9 @@ export default function PriceDesk() {
   }
   function deleteClient() {
     if (!clientForm.id) return;
-    setClients((prev) => prev.filter((c) => c.id !== clientForm.id));
+    const c = clients.find((x) => x.id === clientForm.id);
+    if (c) trashAndUndo("client", c, `cliente ${c.name}`);
+    setClients((prev) => prev.filter((x) => x.id !== clientForm.id));
     setClientForm(blankClient());
   }
   // shipping book (separate from client)
@@ -581,6 +645,8 @@ export default function PriceDesk() {
   }
   function deleteShip() {
     if (!shipForm.id) return;
+    const sh = shippings.find((x) => x.id === shipForm.id);
+    if (sh) trashAndUndo("shipping", sh, `envío ${sh.label || sh.notify || ""}`);
     setShippings((prev) => prev.filter((x) => x.id !== shipForm.id));
     setShipForm(blankShip());
   }
@@ -592,6 +658,7 @@ export default function PriceDesk() {
   }
   function removeSupplier(name) {
     if (!confirm(`¿Sacar el proveedor "${name}"? Sus precios quedan guardados pero deja de mostrarse la columna.`)) return;
+    trashAndUndo("supplier", name, `proveedor ${name}`);
     setSupplierList((l) => l.filter((s) => s !== name));
     setParseSupplier((p) => (p === name ? "" : p));
   }
@@ -839,6 +906,8 @@ export default function PriceDesk() {
   }
   function deleteDraft(id) {
     if (!confirm("¿Borrar este pedido pendiente?")) return;
+    const d = drafts.find((x) => x.id === id);
+    if (d) trashAndUndo("draft", d, `pedido de ${draftClientName(d)}`);
     setDrafts((ds) => ds.filter((x) => x.id !== id));
     if (id === activeId) resetOrder();
   }
@@ -872,10 +941,14 @@ export default function PriceDesk() {
   }
   function deleteLedgerEntry(id) {
     if (!confirm("¿Borrar este movimiento?")) return;
-    setLedger((lg) => lg.filter((e) => e.id !== id));
+    const e = ledger.find((x) => x.id === id);
+    if (e) trashAndUndo("ledger", e, `movimiento ${e.type} ${money(Number(e.amount) || 0)}`);
+    setLedger((lg) => lg.filter((x) => x.id !== id));
   }
   function deleteInvoice(ts, no) {
     if (!confirm(`¿Borrar la factura #${no}? Se recalculan cuentas y PnL.`)) return;
+    const rec = invoiceHistory.find((x) => x.ts === ts);
+    if (rec) trashAndUndo("invoice", rec, `factura #${no}`);
     setInvoiceHistory((h) => h.filter((x) => x.ts !== ts));
   }
   function mergeAccounts() {
@@ -1124,8 +1197,12 @@ export default function PriceDesk() {
         if (!n) return { ok: true, borrados: 0, mensaje: "No hay pedidos pendientes." };
         setPendingDelete({
           titulo: `¿Borrar TODOS los pedidos pendientes (${n})?`,
-          detalle: "Se borran todos los pedidos a medio armar. No se puede deshacer.",
-          run: () => { setDrafts([]); resetOrder(); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré ${n} pedido(s) pendiente(s).` }]); },
+          detalle: "Se borran todos los pedidos a medio armar. Quedan 24 h en el Papelero por si te arrepentís.",
+          run: () => {
+            showUndo(`${n} pedido(s)`, drafts.map((d) => pushTrash("draft", d)));
+            setDrafts([]); resetOrder();
+            setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré ${n} pedido(s) pendiente(s).` }]);
+          },
         });
         return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar los ${n} pedidos pendientes.` };
       }
@@ -1142,7 +1219,7 @@ export default function PriceDesk() {
       setPendingDelete({
         titulo: `¿Borrar el pedido de ${info.cliente}?`,
         detalle: `${info.modelos.join(", ") || "(sin modelos)"} · ${info.piezas}u`,
-        run: () => { setDrafts((ds) => ds.filter((x) => x.id !== target.id)); if (target.id === activeId) resetOrder(); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el pedido de ${info.cliente}.` }]); },
+        run: () => { trashAndUndo("draft", target, `pedido de ${info.cliente}`); setDrafts((ds) => ds.filter((x) => x.id !== target.id)); if (target.id === activeId) resetOrder(); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el pedido de ${info.cliente}.` }]); },
       });
       return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el pedido de ${info.cliente}.` };
     }
@@ -1309,7 +1386,7 @@ export default function PriceDesk() {
       setPendingDelete({
         titulo: `¿Borrar el cliente "${t.name}"?`,
         detalle: "No afecta las facturas ya hechas ni las cuentas corrientes.",
-        run: () => { setClients((prev) => prev.filter((c) => c.id !== t.id)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el cliente ${t.name}.` }]); },
+        run: () => { trashAndUndo("client", t, `cliente ${t.name}`); setClients((prev) => prev.filter((c) => c.id !== t.id)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el cliente ${t.name}.` }]); },
       });
       return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el cliente ${t.name}.` };
     }
@@ -1326,7 +1403,7 @@ export default function PriceDesk() {
       setPendingDelete({
         titulo: `¿Borrar el envío "${tn}"?`,
         detalle: t.direccion || "",
-        run: () => { setShippings((prev) => prev.filter((x) => x.id !== t.id)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el envío ${tn}.` }]); },
+        run: () => { trashAndUndo("shipping", t, `envío ${tn}`); setShippings((prev) => prev.filter((x) => x.id !== t.id)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el envío ${tn}.` }]); },
       });
       return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el envío ${tn}.` };
     }
@@ -1341,7 +1418,7 @@ export default function PriceDesk() {
       setPendingDelete({
         titulo: `¿Borrar el proveedor "${t}"?`,
         detalle: "Los precios cargados de ese proveedor quedan sin usarse.",
-        run: () => { setSupplierList((l) => l.filter((s) => s !== t)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el proveedor ${t}.` }]); },
+        run: () => { trashAndUndo("supplier", t, `proveedor ${t}`); setSupplierList((l) => l.filter((s) => s !== t)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el proveedor ${t}.` }]); },
       });
       return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el proveedor ${t}.` };
     }
@@ -1382,8 +1459,8 @@ export default function PriceDesk() {
       if (!rec) return { ok: false, error: `No encontré la factura #${no}.`, disponibles: invoiceHistory.slice(0, 12).map((h) => h.no) };
       setPendingDelete({
         titulo: `¿Borrar la factura #${rec.no}?`,
-        detalle: `Cliente: ${rec.client || "—"} · Total ${money(rec.total)}. Se recalculan cuentas corrientes y PnL. No se puede deshacer.`,
-        run: () => { setInvoiceHistory((h) => h.filter((x) => x.ts !== rec.ts)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré la factura #${rec.no}. Se recalcularon cuentas y PnL.` }]); },
+        detalle: `Cliente: ${rec.client || "—"} · Total ${money(rec.total)}. Se recalculan cuentas corrientes y PnL. Queda 24 h en el Papelero.`,
+        run: () => { trashAndUndo("invoice", rec, `factura #${rec.no}`); setInvoiceHistory((h) => h.filter((x) => x.ts !== rec.ts)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré la factura #${rec.no}. Se recalcularon cuentas y PnL.` }]); },
       });
       return { status: "needs_confirmation", mensaje: `Le pedí al usuario que confirme borrar la factura #${rec.no} (${rec.client || "—"}, ${money(rec.total)}).` };
     }
@@ -1559,6 +1636,7 @@ export default function PriceDesk() {
         <button onClick={() => setView("pnl")} style={{ ...s.viewTab, ...(view === "pnl" ? s.viewTabOn : {}) }}>📈 PnL</button>
         <button onClick={() => setView("analitica")} style={{ ...s.viewTab, ...(view === "analitica" ? s.viewTabOn : {}) }}>🧮 Analítica</button>
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
+        <button onClick={() => setTrashOpen(true)} style={{ ...s.viewTab, marginLeft: "auto" }} title="Lo borrado en las últimas 24 h — se puede restaurar">🗑️ Papelero{trash.length > 0 ? ` (${trash.length})` : ""}</button>
       </div>
 
       {view === "mesa" && (
@@ -1639,6 +1717,16 @@ export default function PriceDesk() {
       <AgentCommitModal pending={pendingAgentCommit} onCancel={() => setPendingAgentCommit(null)} onConfirm={confirmAgentCommit} />
       <DeleteModal pending={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />
       <NewModelsModal pendingNew={pendingNew} editNew={editNew} confirmNew={confirmNew} dismissNew={dismissNew} onClose={() => setPendingNew([])} />
+
+      {/* Papelero: panel + toast "Borrado X · Deshacer" */}
+      {trashOpen && <TrashPanel trash={trash} trashLabel={trashLabel} restoreTrash={restoreTrash} onClose={() => setTrashOpen(false)} />}
+      {undoToast && undoToast.ids.length > 0 && (
+        <div style={{ position: "fixed", bottom: 18, left: "50%", transform: "translateX(-50%)", background: "#1d2740", border: "1px solid #3a5b8f", color: "#dbe6f7", borderRadius: 8, padding: "10px 14px", zIndex: 1200, display: "flex", gap: 12, alignItems: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.5)", fontSize: 12.5 }}>
+          <span>🗑️ Borrado: {undoToast.label}</span>
+          <button onClick={() => restoreMany(undoToast.ids)} style={{ background: "#2563eb", border: "none", color: "#fff", padding: "5px 12px", borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600 }}>Deshacer</button>
+          <span style={s.chipX} onClick={() => setUndoToast(null)}>×</span>
+        </div>
+      )}
     </div>
   );
 }
