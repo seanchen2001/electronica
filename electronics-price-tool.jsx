@@ -16,6 +16,10 @@ import PnLView from "./components/PnLView.jsx";
 import HistorialView from "./components/HistorialView.jsx";
 import ClientesView from "./components/ClientesView.jsx";
 import CuentasView from "./components/CuentasView.jsx";
+import PriceLoadModal from "./components/modals/PriceLoadModal.jsx";
+import AgentCommitModal from "./components/modals/AgentCommitModal.jsx";
+import DeleteModal from "./components/modals/DeleteModal.jsx";
+import NewModelsModal from "./components/modals/NewModelsModal.jsx";
 import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
@@ -2161,118 +2165,11 @@ export default function PriceDesk() {
         <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬 Asistente</button>
       )}
 
-      {/* Modal: confirmar carga de precios del agente */}
-      {pendingPriceLoad && (
-        <div style={s.modalOverlay} onClick={() => setPendingPriceLoad(null)}>
-          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
-            <div style={s.newHead}>💲 Cargar precios de <b>{pendingPriceLoad.supplier}</b> — revisá antes de guardar</div>
-            <table style={s.invTable}>
-              <thead><tr>
-                <th style={{ ...s.invTh, textAlign: "left" }}>Modelo</th>
-                <th style={s.invTh}>Actual</th><th style={s.invTh}>Nuevo</th><th style={s.invTh}>Δ%</th><th style={{ ...s.invTh, textAlign: "left" }}>Escala</th>
-              </tr></thead>
-              <tbody>
-                {pendingPriceLoad.rows.map((r) => (
-                  <tr key={r.sku} style={r.big ? { background: "#2a1f0f" } : undefined}>
-                    <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{r.big ? "⚠ " : ""}{r.sku}</td>
-                    <td style={{ ...s.invTd, color: "#9aa4b2" }}>{r.oldPrice != null ? money(r.oldPrice) : "—"}</td>
-                    <td style={{ ...s.invTd, color: "#fbbf24" }}>{money(r.newPrice)}</td>
-                    <td style={{ ...s.invTd, color: r.big ? "#f87171" : "#8b94a7" }}>{r.pct == null ? "nuevo" : `${r.pct > 0 ? "+" : ""}${r.pct}%`}</td>
-                    <td style={{ ...s.invTd, textAlign: "left", color: "#c084fc", fontSize: 11 }}>{r.tiers ? r.tiers.map((t) => `${t.min}+→$${t.price}`).join(" · ") : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {pendingPriceLoad.newModels?.length > 0 && (
-              <div style={{ marginTop: 8, fontSize: 12, color: "#e6d8b8" }}>🆕 Modelos fuera del catálogo (se confirman aparte): {pendingPriceLoad.newModels.map((m) => m.name).join(", ")}</div>
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-              <button onClick={() => setPendingPriceLoad(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
-              <button onClick={confirmPriceLoad} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>✓ Confirmar y guardar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: confirmación del agente (revisor + resumen) antes de generar */}
-      {pendingAgentCommit && (
-        <div style={s.modalOverlay} onClick={() => setPendingAgentCommit(null)}>
-          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
-            <div style={s.newHead}>{pendingAgentCommit.kind === "invoice" ? "🧾 Revisá antes de generar la FACTURA" : "📦 Revisá antes de generar los REMITOS"}</div>
-            <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 8 }}>
-              Cliente: <b>{pendingAgentCommit.summary.cliente}</b> · Fecha: {pendingAgentCommit.summary.fecha}
-              {pendingAgentCommit.kind === "invoice" && <> · Venta <b style={{ color: "#fbbf24" }}>{money(pendingAgentCommit.summary.venta)}</b> · Costo {money(pendingAgentCommit.summary.costo)} · Margen <b style={{ color: "#4ade80" }}>{money(pendingAgentCommit.summary.margen)}</b></>}
-            </div>
-            <table style={s.invTable}>
-              <thead><tr>
-                <th style={s.invTh}>Cant.</th><th style={{ ...s.invTh, textAlign: "left" }}>Modelo</th><th style={{ ...s.invTh, textAlign: "left" }}>Color</th><th style={{ ...s.invTh, textAlign: "left" }}>Prov.</th>
-                {pendingAgentCommit.kind === "invoice" && <><th style={s.invTh}>Costo</th><th style={s.invTh}>Precio</th></>}
-              </tr></thead>
-              <tbody>
-                {pendingAgentCommit.summary.lineas.map((l, i) => (
-                  <tr key={i}>
-                    <td style={s.invTd}>{l.cantidad}</td>
-                    <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{l.modelo}</td>
-                    <td style={{ ...s.invTd, textAlign: "left" }}>{l.color || "—"}</td>
-                    <td style={{ ...s.invTd, textAlign: "left" }}>{l.proveedor || "—"}</td>
-                    {pendingAgentCommit.kind === "invoice" && <><td style={{ ...s.invTd, color: "#9aa4b2" }}>{money(l.costo)}</td><td style={{ ...s.invTd, color: "#fbbf24" }}>{money(l.precio)}</td></>}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {pendingAgentCommit.issues.length > 0 && (
-              <div style={{ marginTop: 10, background: "#2a1f0f", border: "1px solid #5a4a1d", borderRadius: 6, padding: "8px 10px", fontSize: 12, color: "#e6d8b8" }}>
-                <b>⚠ El revisor marcó:</b>
-                <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>{pendingAgentCommit.issues.map((x, i) => <li key={i}>{x}</li>)}</ul>
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-              <button onClick={() => setPendingAgentCommit(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
-              <button onClick={confirmAgentCommit} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>✓ Confirmar y generar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: confirmar CUALQUIER borrado pedido por el agente (factura, pedido, cliente, envío, proveedor) */}
-      {pendingDelete && (
-        <div style={s.modalOverlay} onClick={() => setPendingDelete(null)}>
-          <div style={{ ...s.modalCard, width: "min(460px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ ...s.newHead, color: "#f0a0a0" }}>🗑️ {pendingDelete.titulo}</div>
-            {pendingDelete.detalle && (
-              <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 10 }}>{pendingDelete.detalle}</div>
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button onClick={() => setPendingDelete(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
-              <button onClick={confirmDelete} style={{ ...s.pdfBtn, border: "none", cursor: "pointer", background: "#b91c1c" }}>🗑️ Borrar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: modelos nuevos detectados — aparece sí o sí sobre todo */}
-      {pendingNew.length > 0 && (
-        <div style={s.modalOverlay} onClick={() => setPendingNew([])}>
-          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
-            <div style={s.newHead}>🆕 {pendingNew.length} modelo(s) nuevo(s) detectado(s) — revisá y confirmá para agregarlos al catálogo:</div>
-            {pendingNew.map((m, i) => (
-              <div style={s.newRow} key={i}>
-                <input value={m.name} onChange={(e) => editNew(i, "name", e.target.value)} style={{ ...s.invInput, flex: 1, minWidth: 160 }} />
-                <select value={CATEGORIES.includes(m.cat) ? m.cat : "Samsung"} onChange={(e) => editNew(i, "cat", e.target.value)} style={{ ...s.invInput, width: 130 }}>
-                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <span style={s.newPrice}>$<input value={m.price ?? ""} onChange={(e) => editNew(i, "price", parseFloat(String(e.target.value).replace(/[^0-9.]/g, "")) || null)} style={{ ...s.cellInput, width: 64, border: "1px solid #232a3a" }} /></span>
-                <span style={s.newSup}>{m.supplier}</span>
-                <button onClick={() => confirmNew(i)} style={s.newAdd}>✓ Agregar</button>
-                <button onClick={() => dismissNew(i)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>✕</button>
-              </div>
-            ))}
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-              <button onClick={() => setPendingNew([])} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cerrar (descartar todos)</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Modales del agente y de modelos nuevos */}
+      <PriceLoadModal pending={pendingPriceLoad} onCancel={() => setPendingPriceLoad(null)} onConfirm={confirmPriceLoad} />
+      <AgentCommitModal pending={pendingAgentCommit} onCancel={() => setPendingAgentCommit(null)} onConfirm={confirmAgentCommit} />
+      <DeleteModal pending={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />
+      <NewModelsModal pendingNew={pendingNew} editNew={editNew} confirmNew={confirmNew} dismissNew={dismissNew} onClose={() => setPendingNew([])} />
     </div>
   );
 }
