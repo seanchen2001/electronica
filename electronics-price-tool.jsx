@@ -1416,8 +1416,13 @@ export default function PriceDesk() {
       const summ = (x) => ({ id: x.id, cliente: nm(x), modelos: [...new Set((x.order?.items || []).map((i) => i.sku))], piezas: (x.order?.items || []).reduce((a, i) => a + (Number(i.qty) || 0), 0) });
       if (args.all) { // borrar TODOS los pedidos pendientes
         const n = drafts.length;
-        setDrafts([]); resetOrder();
-        return { ok: true, borrados: n, mensaje: `Borré ${n} pedido(s) pendiente(s). Quedó todo limpio.` };
+        if (!n) return { ok: true, borrados: 0, mensaje: "No hay pedidos pendientes." };
+        setPendingDelete({
+          titulo: `¿Borrar TODOS los pedidos pendientes (${n})?`,
+          detalle: "Se borran todos los pedidos a medio armar. No se puede deshacer.",
+          run: () => { setDrafts([]); resetOrder(); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré ${n} pedido(s) pendiente(s).` }]); },
+        });
+        return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar los ${n} pedidos pendientes.` };
       }
       let cands = drafts;
       if (args.id) cands = drafts.filter((x) => x.id === args.id);
@@ -1429,9 +1434,12 @@ export default function PriceDesk() {
       if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios pedidos que coinciden. Preguntá cuál borrar (distinguí por los modelos). No borres sin estar seguro.", candidatos: cands.map(summ) };
       const target = cands[0];
       const info = summ(target);
-      setDrafts((ds) => ds.filter((x) => x.id !== target.id));
-      if (target.id === activeId) resetOrder(); // si borrás el activo, arrancá uno nuevo y vacío
-      return { ok: true, borrado: info };
+      setPendingDelete({
+        titulo: `¿Borrar el pedido de ${info.cliente}?`,
+        detalle: `${info.modelos.join(", ") || "(sin modelos)"} · ${info.piezas}u`,
+        run: () => { setDrafts((ds) => ds.filter((x) => x.id !== target.id)); if (target.id === activeId) resetOrder(); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el pedido de ${info.cliente}.` }]); },
+      });
+      return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el pedido de ${info.cliente}.` };
     }
     if (name === "new_order") { resetOrder(); return { ok: true, mensaje: "Pedido nuevo y vacío. Los otros quedan en pendientes." }; }
     if (name === "add_order_line") {
@@ -1593,8 +1601,12 @@ export default function PriceDesk() {
       if (!cands.length) return { ok: false, error: `No encontré el cliente "${args.name}".`, clientes: clients.map((c) => c.name) };
       if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios clientes que coinciden. Preguntá cuál borrar.", candidatos: cands.map((c) => c.name) };
       const t = cands[0];
-      setClients((prev) => prev.filter((c) => c.id !== t.id));
-      return { ok: true, borrado: t.name };
+      setPendingDelete({
+        titulo: `¿Borrar el cliente "${t.name}"?`,
+        detalle: "No afecta las facturas ya hechas ni las cuentas corrientes.",
+        run: () => { setClients((prev) => prev.filter((c) => c.id !== t.id)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el cliente ${t.name}.` }]); },
+      });
+      return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el cliente ${t.name}.` };
     }
     if (name === "delete_shipping") {
       const q = String(args.name || "").trim().toLowerCase();
@@ -1605,8 +1617,13 @@ export default function PriceDesk() {
       if (!cands.length) return { ok: false, error: `No encontré el envío "${args.name}".`, envios: shippings.map((x) => x.label || x.notify) };
       if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios envíos que coinciden. Preguntá cuál borrar.", candidatos: cands.map((x) => x.label || x.notify) };
       const t = cands[0];
-      setShippings((prev) => prev.filter((x) => x.id !== t.id));
-      return { ok: true, borrado: t.label || t.notify };
+      const tn = t.label || t.notify;
+      setPendingDelete({
+        titulo: `¿Borrar el envío "${tn}"?`,
+        detalle: t.direccion || "",
+        run: () => { setShippings((prev) => prev.filter((x) => x.id !== t.id)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el envío ${tn}.` }]); },
+      });
+      return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el envío ${tn}.` };
     }
     if (name === "delete_supplier") {
       const q = String(args.name || "").trim().toLowerCase();
@@ -1616,8 +1633,12 @@ export default function PriceDesk() {
       if (!cands.length) return { ok: false, error: `No encontré el proveedor "${args.name}".`, proveedores: supplierList };
       if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios proveedores que coinciden. Preguntá cuál borrar.", candidatos: cands };
       const t = cands[0];
-      setSupplierList((l) => l.filter((s) => s !== t));
-      return { ok: true, borrado: t };
+      setPendingDelete({
+        titulo: `¿Borrar el proveedor "${t}"?`,
+        detalle: "Los precios cargados de ese proveedor quedan sin usarse.",
+        run: () => { setSupplierList((l) => l.filter((s) => s !== t)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el proveedor ${t}.` }]); },
+      });
+      return { status: "needs_confirmation", mensaje: `Esperando confirmación del usuario para borrar el proveedor ${t}.` };
     }
     if (name === "supplier_ask") {
       const m = args.minMarginPct != null ? Number(args.minMarginPct) : marginNum;
@@ -1654,16 +1675,19 @@ export default function PriceDesk() {
       const no = String(args.invoiceNo || "").trim();
       const rec = invoiceHistory.find((h) => String(h.no) === no);
       if (!rec) return { ok: false, error: `No encontré la factura #${no}.`, disponibles: invoiceHistory.slice(0, 12).map((h) => h.no) };
-      setPendingDelete({ ts: rec.ts, no: rec.no, cliente: rec.client, total: rec.total });
-      return { status: "needs_confirmation", mensaje: `Le pedí al usuario que confirme borrar la factura #${rec.no} (${rec.client || "—"}, ${money(rec.total)}). Al borrar se recalculan cuentas y PnL.` };
+      setPendingDelete({
+        titulo: `¿Borrar la factura #${rec.no}?`,
+        detalle: `Cliente: ${rec.client || "—"} · Total ${money(rec.total)}. Se recalculan cuentas corrientes y PnL. No se puede deshacer.`,
+        run: () => { setInvoiceHistory((h) => h.filter((x) => x.ts !== rec.ts)); setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré la factura #${rec.no}. Se recalcularon cuentas y PnL.` }]); },
+      });
+      return { status: "needs_confirmation", mensaje: `Le pedí al usuario que confirme borrar la factura #${rec.no} (${rec.client || "—"}, ${money(rec.total)}).` };
     }
     return { ok: false, error: "herramienta desconocida" };
   }
-  function confirmDeleteInvoice() {
+  // Confirmación universal de borrado del agente: pendingDelete = { titulo, detalle, run }.
+  function confirmDelete() {
     const d = pendingDelete; setPendingDelete(null);
-    if (!d) return;
-    setInvoiceHistory((h) => h.filter((x) => x.ts !== d.ts));
-    setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré la factura #${d.no}. Se recalcularon cuentas y PnL.` }]);
+    if (d?.run) d.run();
   }
   async function runAgent(userText, file = null) {
     if (!apiKey.trim()) { setAgentLog((l) => [...l, { role: "system", text: "Cargá la contraseña / API key primero." }]); return; }
@@ -2769,18 +2793,17 @@ export default function PriceDesk() {
         </div>
       )}
 
-      {/* Modal: confirmar borrado de factura pedido por el agente */}
+      {/* Modal: confirmar CUALQUIER borrado pedido por el agente (factura, pedido, cliente, envío, proveedor) */}
       {pendingDelete && (
         <div style={s.modalOverlay} onClick={() => setPendingDelete(null)}>
           <div style={{ ...s.modalCard, width: "min(460px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ ...s.newHead, color: "#f0a0a0" }}>🗑️ ¿Borrar la factura #{pendingDelete.no}?</div>
-            <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 10 }}>
-              Cliente: <b>{pendingDelete.cliente || "—"}</b> · Total: <b style={{ color: "#fbbf24" }}>{money(pendingDelete.total)}</b>
-              <div style={{ color: "#8b94a7", marginTop: 6 }}>Se recalculan cuentas corrientes y PnL. No se puede deshacer.</div>
-            </div>
+            <div style={{ ...s.newHead, color: "#f0a0a0" }}>🗑️ {pendingDelete.titulo}</div>
+            {pendingDelete.detalle && (
+              <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 10 }}>{pendingDelete.detalle}</div>
+            )}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button onClick={() => setPendingDelete(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
-              <button onClick={confirmDeleteInvoice} style={{ ...s.pdfBtn, border: "none", cursor: "pointer", background: "#b91c1c" }}>🗑️ Borrar factura</button>
+              <button onClick={confirmDelete} style={{ ...s.pdfBtn, border: "none", cursor: "pointer", background: "#b91c1c" }}>🗑️ Borrar</button>
             </div>
           </div>
         </div>
