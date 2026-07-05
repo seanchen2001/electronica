@@ -48,6 +48,8 @@ import {
   whatsappQuoteText as whatsappQuoteTextPure,
 } from "./lib/ai.js";
 import { computeAccounts, canonName } from "./lib/accounts.js";
+import { analyticsData, analyticsSummary } from "./lib/analytics.js";
+import AnaliticaView from "./components/AnaliticaView.jsx";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -885,6 +887,9 @@ export default function PriceDesk() {
   function unmerge(name) { setAliases((a) => { const n = { ...a }; delete n[name]; return n; }); }
 
   // PnL / Margen — agregado desde el historial (solo facturas = ventas)
+  // Analítica (pestaña + tool del agente) — derivada del historial, sin storage propio
+  const analytics = useMemo(() => analyticsData({ invoiceHistory }), [invoiceHistory]);
+
   const pnlView = useMemo(() => {
     const sales = invoiceHistory.filter((h) => h.type === "factura");
     let ventas = 0, costo = 0, piezas = 0;
@@ -1382,6 +1387,9 @@ export default function PriceDesk() {
       });
       return { status: "needs_confirmation", mensaje: `Le pedí al usuario que confirme borrar la factura #${rec.no} (${rec.client || "—"}, ${money(rec.total)}).` };
     }
+    if (name === "analytics_summary") {
+      return analyticsSummary({ invoiceHistory, ledger }, args.period || "mes");
+    }
     // ---- CUENTAS: consultar saldos y registrar movimientos por chat ----
     if (name === "list_accounts") {
       const side = /prov|supp/i.test(String(args.side || "")) ? "supplier" : "client";
@@ -1549,6 +1557,7 @@ export default function PriceDesk() {
         <button onClick={() => setView("clientes")} style={{ ...s.viewTab, ...(view === "clientes" ? s.viewTabOn : {}) }}>👤 Clientes</button>
         <button onClick={() => setView("cuentas")} style={{ ...s.viewTab, ...(view === "cuentas" ? s.viewTabOn : {}) }}>💰 Cuentas</button>
         <button onClick={() => setView("pnl")} style={{ ...s.viewTab, ...(view === "pnl" ? s.viewTabOn : {}) }}>📈 PnL</button>
+        <button onClick={() => setView("analitica")} style={{ ...s.viewTab, ...(view === "analitica" ? s.viewTabOn : {}) }}>🧮 Analítica</button>
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
       </div>
 
@@ -1610,6 +1619,8 @@ export default function PriceDesk() {
       )}
 
       {view === "pnl" && <PnLView pnlView={pnlView} />}
+
+      {view === "analitica" && <AnaliticaView data={analytics} />}
 
       {view === "historial" && (
         <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory}
