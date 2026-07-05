@@ -12,6 +12,15 @@ import { pdf } from "@react-pdf/renderer";
 import InvoiceDoc, { RemitosDoc } from "./InvoiceDoc.jsx";
 import { AGENT_TOOLS, buildAgentSystem, REVIEW_SYSTEM } from "./lib/agent-tools.js";
 import styles from "./styles.js";
+import {
+  PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
+  HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
+  DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, COMPANY, supplierCode, MONTHS_ES,
+} from "./lib/constants.js";
+import {
+  uid, fmtDMY, today, parseDMY, nextInvoiceNo, blankClient, blankShip,
+  timesForPrices, load, clone, money,
+} from "./lib/helpers.js";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -24,8 +33,6 @@ import styles from "./styles.js";
  */
 
 const GEMINI_MODEL = "gemini-2.5-flash";
-// Categorías válidas para nuevos modelos.
-const CATEGORIES = ["Samsung", "Motorola LATIN", "Motorola EURO"];
 
 // Shared disambiguation rules: section headers (EURO/LATIN) + base-variant hint.
 const DISAMBIG =
@@ -57,57 +64,6 @@ function buildMarkSystem(lines) {
 const DESK_SYSTEM =
   "You are a trading-desk analyst for a phone wholesaler. Answer using ONLY the supplied JSON data: rows of {sku, cat, prices (per supplier, USD), min, median, client}, the margin %, and optionally a 'previous' snapshot. Be concise and quantitative, cite supplier names, and when asked about changes compare against 'previous'. If the data doesn't cover the question, say so plainly.";
 
-const PRICES_KEY = "desk-prices-v1";
-const LISTA_KEY = "desk-lista-v1";
-const MARGIN_KEY = "desk-margin-v1";
-const SNAP_KEY = "desk-snapshots-v1";
-const TIMES_KEY = "desk-times-v1";
-const CLIENTS_KEY = "desk-clients-v1";
-const SHIPS_KEY = "desk-ships-v1";
-const HIST_KEY = "desk-invoices-v1";
-const CAT_KEY = "desk-extra-catalog-v1";
-const LEDGER_KEY = "desk-ledger-v1";
-const SUPP_KEY = "desk-suppliers-v1";
-const ALIASES_KEY = "desk-aliases-v1";
-const TIERS_KEY = "desk-tiers-v1";
-const PHIST_KEY = "desk-price-history-v1";
-const DRAFTS_KEY = "desk-drafts-v1";
-// Un pedido pendiente se auto-borra si queda SIN TOCARSE más de esto (por inactividad, no por creación).
-// El pedido ACTIVO nunca se borra. Cambiá el número si querés darle más/menos margen.
-const DRAFT_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
-// Etapas de un pedido (seguimiento del progreso). El id se guarda en order.stage.
-const ORDER_STAGES = [
-  { id: "cotizando", label: "Cotizando", emoji: "💬" },
-  { id: "negociando", label: "Negociando proveedor", emoji: "🤝" },
-  { id: "confirmada", label: "Confirmada", emoji: "✅" },
-  { id: "esperando_pago", label: "Esperando pago", emoji: "💰" },
-  { id: "a_enviar", label: "A enviar", emoji: "📦" },
-  { id: "enviada", label: "Enviada", emoji: "🚚" },
-];
-const stageInfo = (id) => ORDER_STAGES.find((x) => x.id === id) || ORDER_STAGES[0];
-
-function nextInvoiceNo(hist) {
-  const nums = (hist || []).map((h) => parseInt(h.no, 10)).filter((n) => !Number.isNaN(n));
-  return nums.length ? Math.max(...nums) + 1 : 2427;
-}
-const COMPANY = { name: "PHOTO IMAGEN & VIDEO EXPORT LLC" };
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-// códigos cortos de proveedor para el nombre del archivo del remito
-const SUPPLIER_CODES = { planet: "PL", mirgor: "Mir", bax: "Bax", baxcell: "Bax", vitel: "Vit", sh: "SH" };
-function supplierCode(name) {
-  const key = String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  return SUPPLIER_CODES[key] || String(name || "").replace(/[^\w-]+/g, "_") || "prov";
-}
-
-function fmtDMY(ts) { const d = new Date(ts); return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; }
-function today() { return fmtDMY(Date.now()); }
-function parseDMY(s, fallbackTs) {
-  const m = String(s || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-  if (m) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return new Date(y, +m[2] - 1, +m[1]); }
-  return new Date(fallbackTs || 0);
-}
-const MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
-
 // Un snapshot por semana (lunes del ciclo). Guardar de nuevo en la misma semana
 // pisa el anterior → queda "el último precio de la semana". Mantiene ~2 años.
 function upsertWeekly(snaps, prices, lista) {
@@ -117,34 +73,6 @@ function upsertWeekly(snaps, prices, lista) {
   const next = i >= 0 ? snaps.map((sn, k) => (k === i ? entry : sn)) : [...snaps, entry];
   return next.slice(-104);
 }
-function blankClient() { return { id: "", name: "", address: "", ruc: "", phone: "", cuentaCorriente: false }; }
-function blankShip() { return { id: "", label: "", notify: "", direccion: "", telefono: "", contacto: "" }; }
-
-// Stamp every loaded cell at this cycle's Monday so it loads as "actualizado".
-function timesForPrices(pricesObj) {
-  const ts = mondayStart();
-  const t = {};
-  for (const sku of Object.keys(pricesObj)) {
-    t[sku] = {};
-    for (const sp of Object.keys(pricesObj[sku])) t[sku][sp] = ts;
-  }
-  return t;
-}
-
-const load = (k, fallback) => {
-  try {
-    const raw = localStorage.getItem(k);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-const clone = (o) => JSON.parse(JSON.stringify(o));
-const money = (n) =>
-  n == null || Number.isNaN(n)
-    ? "—"
-    : "$" + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-
 function stripFences(t) {
   let s = (t || "").trim();
   if (s.startsWith("```")) s = s.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
