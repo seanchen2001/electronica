@@ -21,6 +21,13 @@ import {
   uid, fmtDMY, today, parseDMY, nextInvoiceNo, blankClient, blankShip,
   timesForPrices, load, clone, money,
 } from "./lib/helpers.js";
+import {
+  upsertWeekly,
+  costForQty as costForQtyPure,
+  hasTiers as hasTiersPure,
+  bestSuppliers as bestSuppliersPure,
+  negotiationReport as negotiationReportPure,
+} from "./lib/pricing.js";
 
 /**
  * S26 Price Desk — supplier comparison + margin + dual input.
@@ -64,15 +71,6 @@ function buildMarkSystem(lines) {
 const DESK_SYSTEM =
   "You are a trading-desk analyst for a phone wholesaler. Answer using ONLY the supplied JSON data: rows of {sku, cat, prices (per supplier, USD), min, median, client}, the margin %, and optionally a 'previous' snapshot. Be concise and quantitative, cite supplier names, and when asked about changes compare against 'previous'. If the data doesn't cover the question, say so plainly.";
 
-// Un snapshot por semana (lunes del ciclo). Guardar de nuevo en la misma semana
-// pisa el anterior → queda "el último precio de la semana". Mantiene ~2 años.
-function upsertWeekly(snaps, prices, lista) {
-  const week = mondayStart();
-  const entry = { week, ts: Date.now(), prices: JSON.parse(JSON.stringify(prices)), lista: JSON.parse(JSON.stringify(lista)) };
-  const i = snaps.findIndex((sn) => sn.week === week);
-  const next = i >= 0 ? snaps.map((sn, k) => (k === i ? entry : sn)) : [...snaps, entry];
-  return next.slice(-104);
-}
 function stripFences(t) {
   let s = (t || "").trim();
   if (s.startsWith("```")) s = s.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
@@ -751,18 +749,9 @@ export default function PriceDesk() {
     for (const [sp, v] of Object.entries(row)) if (typeof v === "number" && v < bv) { bv = v; best = sp; }
     return best;
   }
-  // costo del proveedor para una cantidad, usando la escala (tier) si existe; si no, el precio base
-  function costForQty(sku, supplier, qty = 1) {
-    const t = tiers[sku]?.[supplier];
-    if (Array.isArray(t) && t.length) {
-      const sorted = [...t].sort((a, b) => a.min - b.min);
-      let p = sorted[0].price;
-      for (const x of sorted) if (qty >= x.min) p = x.price;
-      return p;
-    }
-    return prices[sku]?.[supplier] ?? 0;
-  }
-  function hasTiers(sku, supplier) { return Array.isArray(tiers[sku]?.[supplier]) && tiers[sku][supplier].length > 1; }
+  // costo del proveedor para una cantidad (wrapper sobre lib/pricing con el estado actual)
+  function costForQty(sku, supplier, qty = 1) { return costForQtyPure(prices, tiers, sku, supplier, qty); }
+  function hasTiers(sku, supplier) { return hasTiersPure(tiers, sku, supplier); }
   // una línea de orden: qty, color, spec (EURO/LATIN), proveedor (de dónde se compra) + su costo, y price (lo que se factura al cliente)
   function specForCat(cat) { return cat === "Motorola LATIN" ? "LATIN" : cat === "Motorola EURO" ? "EURO" : ""; }
   function newOrderLine(sku) {
@@ -1227,37 +1216,10 @@ export default function PriceDesk() {
   useEffect(() => { const el = chatScrollRef.current; if (el) el.scrollTop = el.scrollHeight; }, [agentLog, answer, parseMsg, markMsg, chatNote, agentBusy]);
   function agentSetOrder(updater) { const next = updater(orderRef.current); orderRef.current = next; setOrder(next); }
 
-  // ranking de proveedores por costo para una cantidad (respeta tiers)
-  function bestSuppliers(sku, qty = 1) {
-    const row = prices[sku] || {};
-    const list = Object.keys(row)
-      .map((sp) => ({ supplier: sp, cost: costForQty(sku, sp, qty), base: row[sp], escala: hasTiers(sku, sp) }))
-      .filter((x) => typeof x.cost === "number")
-      .sort((a, b) => a.cost - b.cost);
-    const prevVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[sku]?.[sp]).filter((x) => typeof x === "number") : [];
-    const prevMin = prevVals.length ? Math.min(...prevVals) : null;
-    return {
-      sku, qty, ranking: list,
-      mejor: list[0] ? { proveedor: list[0].supplier, costo: list[0].cost } : null,
-      brecha_con_alternativa: list[0] && list[1] ? +(list[1].cost - list[0].cost).toFixed(2) : null,
-      un_solo_proveedor: list.length === 1,
-      subio_vs_semana_pasada: list[0] && prevMin != null ? list[0].cost > prevMin : false,
-    };
-  }
+  // ranking de proveedores / reporte de negociación (wrappers sobre lib/pricing con el estado actual)
+  function bestSuppliers(sku, qty = 1) { return bestSuppliersPure({ prices, tiers, prevSnap, supplierList }, sku, qty); }
   function negotiationReport(scope = "order") {
-    const skus = scope === "all" ? catalog.map((c) => c.name) : [...new Set(orderRef.current.items.map((i) => i.sku))];
-    const out = [];
-    for (const sku of skus) {
-      const qty = orderRef.current.items.find((i) => i.sku === sku)?.qty || 1;
-      const bs = bestSuppliers(sku, qty);
-      if (!bs.mejor) continue;
-      const flags = [];
-      if (bs.un_solo_proveedor) flags.push("sin competencia (un solo proveedor)");
-      if (bs.subio_vs_semana_pasada) flags.push("subió vs la semana pasada");
-      if (bs.brecha_con_alternativa != null && bs.brecha_con_alternativa > 0.005) flags.push(`la alternativa está $${bs.brecha_con_alternativa} más cara`);
-      if (flags.length) out.push({ sku, proveedor: bs.mejor.proveedor, costo: bs.mejor.costo, flags });
-    }
-    return { scope, sugerencias: out };
+    return negotiationReportPure({ prices, tiers, prevSnap, supplierList, catalog, orderItems: orderRef.current.items }, scope);
   }
   function orderSummaryData() {
     const o = orderRef.current;
