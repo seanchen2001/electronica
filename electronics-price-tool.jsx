@@ -1580,6 +1580,45 @@ export default function PriceDesk() {
       setSupplierList((l) => [...l, nm]);
       return { ok: true, creado: true, proveedor: nm };
     }
+    // ---- READ: listar clientes / envíos / proveedores ----
+    if (name === "list_clients") return { clientes: clients.map((c) => ({ nombre: c.name, direccion: c.address || "", ruc: c.ruc || "", telefono: c.phone || "", cuenta_corriente: !!c.cuentaCorriente })) };
+    if (name === "list_shippings") return { envios: shippings.map((sh) => ({ nombre: sh.label || sh.notify, notify: sh.notify || "", direccion: sh.direccion || "", telefono: sh.telefono || "", contacto: sh.contacto || "" })) };
+    if (name === "list_suppliers") return { proveedores: supplierList };
+    // ---- DELETE: borrar cliente / envío / proveedor (con guard de ambigüedad) ----
+    if (name === "delete_client") {
+      const q = String(args.name || "").trim().toLowerCase();
+      if (!q) return { ok: false, error: "Falta el nombre del cliente a borrar." };
+      let cands = clients.filter((c) => (c.name || "").toLowerCase() === q);
+      if (!cands.length) cands = clients.filter((c) => (c.name || "").toLowerCase().includes(q));
+      if (!cands.length) return { ok: false, error: `No encontré el cliente "${args.name}".`, clientes: clients.map((c) => c.name) };
+      if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios clientes que coinciden. Preguntá cuál borrar.", candidatos: cands.map((c) => c.name) };
+      const t = cands[0];
+      setClients((prev) => prev.filter((c) => c.id !== t.id));
+      return { ok: true, borrado: t.name };
+    }
+    if (name === "delete_shipping") {
+      const q = String(args.name || "").trim().toLowerCase();
+      if (!q) return { ok: false, error: "Falta el nombre del envío a borrar." };
+      const key = (x) => (x.label || x.notify || "").toLowerCase();
+      let cands = shippings.filter((x) => key(x) === q);
+      if (!cands.length) cands = shippings.filter((x) => key(x).includes(q) || (x.notify || "").toLowerCase().includes(q));
+      if (!cands.length) return { ok: false, error: `No encontré el envío "${args.name}".`, envios: shippings.map((x) => x.label || x.notify) };
+      if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios envíos que coinciden. Preguntá cuál borrar.", candidatos: cands.map((x) => x.label || x.notify) };
+      const t = cands[0];
+      setShippings((prev) => prev.filter((x) => x.id !== t.id));
+      return { ok: true, borrado: t.label || t.notify };
+    }
+    if (name === "delete_supplier") {
+      const q = String(args.name || "").trim().toLowerCase();
+      if (!q) return { ok: false, error: "Falta el nombre del proveedor a borrar." };
+      let cands = supplierList.filter((s) => s.toLowerCase() === q);
+      if (!cands.length) cands = supplierList.filter((s) => s.toLowerCase().includes(q));
+      if (!cands.length) return { ok: false, error: `No encontré el proveedor "${args.name}".`, proveedores: supplierList };
+      if (cands.length > 1) return { ambiguo: true, mensaje: "Hay varios proveedores que coinciden. Preguntá cuál borrar.", candidatos: cands };
+      const t = cands[0];
+      setSupplierList((l) => l.filter((s) => s !== t));
+      return { ok: true, borrado: t };
+    }
     if (name === "supplier_ask") {
       const m = args.minMarginPct != null ? Number(args.minMarginPct) : marginNum;
       const r2 = (n) => Math.round(n * 100) / 100;
