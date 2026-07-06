@@ -71,16 +71,24 @@ export default function PriceDesk() {
   const [hideEmpty, setHideEmpty] = useState(false); // ocultar modelos sin precio esta semana
   // catálogo dinámico: base (fijo) + modelos agregados por el usuario
   const [extraCatalog, setExtraCatalog] = useState(() => load(CAT_KEY, []));
+  const [hiddenModels, setHiddenModels] = useState(() => load("desk-hidden-models-v1", [])); // modelos base ocultados (borrar/renombrar/unificar)
   // proveedores editables (sembrados de la constante, se pueden agregar/sacar)
   const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
   const [newSupplier, setNewSupplier] = useState("");
   // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
   // agregado después. Si no, los modelos nuevos quedan en una sección aparte al final.
   const catalog = useMemo(() => {
-    const merged = [...CATALOG, ...extraCatalog];
+    const hidden = new Set(hiddenModels);
+    const extraByName = new Map(extraCatalog.map((c) => [c.name, c]));
+    const baseNames = new Set(CATALOG.map((c) => c.name));
+    const merged = [];
+    // modelos base (con override de categoría si hay un extra del mismo nombre), salvo los ocultados
+    for (const c of CATALOG) { if (!hidden.has(c.name)) merged.push(extraByName.get(c.name) || c); }
+    // modelos agregados que no pisan a uno base
+    for (const c of extraCatalog) { if (!baseNames.has(c.name) && !hidden.has(c.name)) merged.push(c); }
     const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
     return merged.map((c, i) => [c, i]).sort((a, b) => (idx(a[0]) - idx(b[0])) || (a[1] - b[1])).map((x) => x[0]);
-  }, [extraCatalog]);
+  }, [extraCatalog, hiddenModels]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
@@ -186,6 +194,7 @@ export default function PriceDesk() {
   }, [clients]);
   useEffect(() => { try { localStorage.setItem(HIST_KEY, JSON.stringify(invoiceHistory)); } catch {} }, [invoiceHistory]);
   useEffect(() => { try { localStorage.setItem(CAT_KEY, JSON.stringify(extraCatalog)); } catch {} }, [extraCatalog]);
+  useEffect(() => { try { localStorage.setItem("desk-hidden-models-v1", JSON.stringify(hiddenModels)); } catch {} }, [hiddenModels]);
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
@@ -253,6 +262,7 @@ export default function PriceDesk() {
         setInvoiceHistory((h) => resolve(d.invoices, h, "invoices"));
         setSnapshots((sn) => resolve(d.snapshots, sn, "snapshots"));
         setExtraCatalog((c) => resolve(d.catalog, c, "catalog"));
+        setHiddenModels((h) => resolve(d.hiddenModels, h, "hiddenModels"));
         setLedger((lg) => resolve(d.ledger, lg, "ledger"));
         setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
         setAliases((al) => resolveObj(d.aliases, al, "aliases"));
@@ -288,6 +298,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("invoices", invoiceHistory); }, [invoiceHistory]);
   useEffect(() => { syncUp("snapshots", snapshots); }, [snapshots]);
   useEffect(() => { syncUp("catalog", extraCatalog); }, [extraCatalog]);
+  useEffect(() => { syncUp("hiddenModels", hiddenModels); }, [hiddenModels]);
   useEffect(() => { syncUp("prices", prices); }, [prices]);
   useEffect(() => { syncUp("times", times); }, [times]);
   useEffect(() => { syncUp("lista", lista); }, [lista]);
@@ -1399,6 +1410,76 @@ export default function PriceDesk() {
     if (name === "list_clients") return { clientes: clients.map((c) => ({ nombre: c.name, direccion: c.address || "", ruc: c.ruc || "", telefono: c.phone || "", cuenta_corriente: !!c.cuentaCorriente })) };
     if (name === "list_shippings") return { envios: shippings.map((sh) => ({ nombre: sh.label || sh.notify, notify: sh.notify || "", direccion: sh.direccion || "", telefono: sh.telefono || "", contacto: sh.contacto || "" })) };
     if (name === "list_suppliers") return { proveedores: supplierList };
+    // ---- MODELOS (catálogo): leer / agregar / editar / borrar / unificar ----
+    // mover todos los datos de precio (prices/tiers/times/lista/priceHistory) de un SKU a otro
+    const migrateSku = (from, to) => {
+      const move = (obj, keepExisting) => { if (!(from in obj)) return obj; const n = { ...obj }; n[to] = keepExisting ? { ...(n[to] || {}), ...n[from] } : (n[to] ?? n[from]); delete n[from]; return n; };
+      setPrices((p) => move(p, true)); setTiers((t) => move(t, true)); setTimes((t) => move(t, true)); setLista((l) => move(l, false));
+      setPriceHistory((h) => h.map((r) => (r.sku === from ? { ...r, sku: to } : r)));
+    };
+    const clearSku = (sku) => {
+      const drop = (obj) => { if (!(sku in obj)) return obj; const n = { ...obj }; delete n[sku]; return n; };
+      setPrices(drop); setTiers(drop); setTimes(drop); setLista(drop);
+    };
+    if (name === "list_models") return { modelos: catalog.map((c) => ({ nombre: c.name, categoria: c.cat })) };
+    if (name === "add_model") {
+      const nm = String(args.name || "").trim();
+      if (!nm) return { ok: false, error: "Falta el nombre del modelo." };
+      const cat = CATEGORIES.includes(args.cat) ? args.cat : "Samsung";
+      if (catalog.some((c) => c.name.toLowerCase() === nm.toLowerCase())) return { ok: true, existe: true, modelo: nm };
+      setExtraCatalog((c) => [...c, { name: nm, cat }]);
+      return { ok: true, creado: true, modelo: nm, categoria: cat };
+    }
+    if (name === "edit_model") {
+      const cur = catalog.find((c) => c.name.toLowerCase() === String(args.name || "").trim().toLowerCase());
+      if (!cur) return { ok: false, error: `No encontré el modelo "${args.name}".`, modelos: catalog.map((c) => c.name).slice(0, 60) };
+      const newName = args.newName ? String(args.newName).trim() : cur.name;
+      const newCat = args.cat && CATEGORIES.includes(args.cat) ? args.cat : cur.cat;
+      if (newName.toLowerCase() !== cur.name.toLowerCase() && catalog.some((c) => c.name.toLowerCase() === newName.toLowerCase()))
+        return { ok: false, error: `Ya existe "${newName}". Para juntarlos usá merge_models.` };
+      const isBase = CATALOG.some((c) => c.name === cur.name);
+      if (newName !== cur.name) {
+        if (isBase) { setHiddenModels((h) => (h.includes(cur.name) ? h : [...h, cur.name])); setExtraCatalog((l) => [...l.filter((c) => c.name !== cur.name), { name: newName, cat: newCat }]); }
+        else setExtraCatalog((l) => l.map((c) => (c.name === cur.name ? { name: newName, cat: newCat } : c)));
+        migrateSku(cur.name, newName);
+      } else {
+        // solo cambia la categoría → override
+        setExtraCatalog((l) => (l.some((c) => c.name === cur.name) ? l.map((c) => (c.name === cur.name ? { name: cur.name, cat: newCat } : c)) : [...l, { name: cur.name, cat: newCat }]));
+      }
+      return { ok: true, modelo: newName, categoria: newCat, renombrado: newName !== cur.name };
+    }
+    if (name === "delete_model") {
+      const cur = catalog.find((c) => c.name.toLowerCase() === String(args.name || "").trim().toLowerCase());
+      if (!cur) return { ok: false, error: `No encontré el modelo "${args.name}".`, modelos: catalog.map((c) => c.name).slice(0, 60) };
+      setPendingDelete({
+        titulo: `¿Borrar el modelo "${cur.name}"?`,
+        detalle: "Sale del catálogo. No toca facturas ya hechas.",
+        run: () => {
+          setExtraCatalog((l) => l.filter((c) => c.name !== cur.name));
+          if (CATALOG.some((c) => c.name === cur.name)) setHiddenModels((h) => (h.includes(cur.name) ? h : [...h, cur.name]));
+          clearSku(cur.name);
+          setAgentLog((l) => [...l, { role: "system", text: `🗑️ Borré el modelo ${cur.name}.` }]);
+        },
+      });
+      return { status: "needs_confirmation", mensaje: `Esperando confirmación para borrar el modelo ${cur.name}.` };
+    }
+    if (name === "merge_models") {
+      const a = catalog.find((c) => c.name.toLowerCase() === String(args.from || "").trim().toLowerCase());
+      const b = catalog.find((c) => c.name.toLowerCase() === String(args.into || "").trim().toLowerCase());
+      if (!a || !b) return { ok: false, error: "Alguno de los dos modelos no existe.", modelos: catalog.map((c) => c.name).slice(0, 60) };
+      if (a.name === b.name) return { ok: false, error: "Son el mismo modelo." };
+      setPendingDelete({
+        titulo: `¿Unificar "${a.name}" dentro de "${b.name}"?`,
+        detalle: `Los precios de ${a.name} se pasan a ${b.name} (gana ${b.name} si hay conflicto) y ${a.name} se elimina.`,
+        run: () => {
+          migrateSku(a.name, b.name);
+          setExtraCatalog((l) => l.filter((c) => c.name !== a.name));
+          if (CATALOG.some((c) => c.name === a.name)) setHiddenModels((h) => (h.includes(a.name) ? h : [...h, a.name]));
+          setAgentLog((l) => [...l, { role: "system", text: `🔗 Unifiqué ${a.name} → ${b.name}.` }]);
+        },
+      });
+      return { status: "needs_confirmation", mensaje: `Esperando confirmación para unificar ${a.name} → ${b.name}.` };
+    }
     // ---- DELETE: borrar cliente / envío / proveedor (con guard de ambigüedad) ----
     if (name === "delete_client") {
       const q = String(args.name || "").trim().toLowerCase();

@@ -291,14 +291,17 @@ export default function MesaView({
                   </tr>
                 );
               };
-              // agrupar: categoría (en orden) → modelo (nombre sin RAM+almacenamiento) → variantes
+              // agrupar: categoría → modelo (nombre sin RAM+almacenamiento) → variantes.
+              // Junta TODAS las variantes de un modelo aunque no estén pegadas (ej. una del catálogo base y otra agregada).
               const cats = [];
-              let cc = null, cm = null;
+              const catMap = new Map();
               for (const item of visibleCatalog) {
-                if (!cc || cc.cat !== item.cat) { cc = { cat: item.cat, models: [] }; cats.push(cc); cm = null; }
+                let c = catMap.get(item.cat);
+                if (!c) { c = { cat: item.cat, models: [], modelMap: new Map() }; catMap.set(item.cat, c); cats.push(c); }
                 const key = modelKey(item.name);
-                if (!cm || cm.key !== key) { cm = { key, variants: [] }; cc.models.push(cm); }
-                cm.variants.push(item.name);
+                let m = c.modelMap.get(key);
+                if (!m) { m = { key, variants: [] }; c.modelMap.set(key, m); c.models.push(m); }
+                m.variants.push(item.name);
               }
               const out = [];
               for (const c of cats) {
