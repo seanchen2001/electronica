@@ -27,7 +27,7 @@ import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
   TRASH_KEY, TRASH_TTL_MS,
-  DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, COMPANY, supplierCode, MONTHS_ES,
+  DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, DEPTS, DEFAULT_DEPT, COMPANY, supplierCode, MONTHS_ES,
 } from "./lib/constants.js";
 import {
   uid, fmtDMY, today, parseDMY, nextInvoiceNo, blankClient, blankShip,
@@ -69,6 +69,7 @@ export default function PriceDesk() {
   useEffect(() => { try { sessionStorage.setItem("desk-secret", apiKey); } catch {} }, [apiKey]);
   const [margin, setMargin] = useState(() => load(MARGIN_KEY, 3));
   const [hideEmpty, setHideEmpty] = useState(false); // ocultar modelos sin precio esta semana
+  const [selectedDept, setSelectedDept] = useState(DEFAULT_DEPT); // departamento activo en la Mesa (Teléfonos / iPhone / Laptops / …)
   // catálogo dinámico: base (fijo) + modelos agregados por el usuario
   const [extraCatalog, setExtraCatalog] = useState(() => load(CAT_KEY, []));
   const [hiddenModels, setHiddenModels] = useState(() => load("desk-hidden-models-v1", [])); // modelos base ocultados (borrar/renombrar/unificar)
@@ -89,9 +90,12 @@ export default function PriceDesk() {
     // modelos agregados que no pisan a uno base
     for (const c of extraCatalog) { if (!baseNames.has(c.name)) push(c); }
     const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
-    // ordenar por categoría y, dentro de cada una, por nombre (así A27 cae con los otros A, etc.)
-    return merged.sort((a, b) => (idx(a) - idx(b)) || a.name.localeCompare(b.name, "en", { numeric: true }));
+    // cada modelo tiene un departamento (default Teléfonos); ordenar por categoría y, dentro, por nombre
+    return merged.map((c) => ({ ...c, dept: c.dept || DEFAULT_DEPT }))
+      .sort((a, b) => (idx(a) - idx(b)) || a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name, "en", { numeric: true }));
   }, [extraCatalog, hiddenModels]);
+  // departamentos disponibles: los fijos + los que existan en el catálogo (para que aparezca la pestaña)
+  const deptList = useMemo(() => [...new Set([...DEPTS, ...catalog.map((c) => c.dept)])], [catalog]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
@@ -597,8 +601,8 @@ export default function PriceDesk() {
 
   // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
   const visibleCatalog = useMemo(
-    () => (hideEmpty ? catalog.filter((c) => aggBySku[c.name]?.min != null) : catalog),
-    [catalog, aggBySku, hideEmpty]
+    () => catalog.filter((c) => c.dept === selectedDept && (!hideEmpty || aggBySku[c.name]?.min != null)),
+    [catalog, aggBySku, hideEmpty, selectedDept]
   );
 
 
@@ -1434,32 +1438,35 @@ export default function PriceDesk() {
       const drop = (obj) => { if (!(sku in obj)) return obj; const n = { ...obj }; delete n[sku]; return n; };
       setPrices(drop); setTiers(drop); setTimes(drop); setLista(drop);
     };
-    if (name === "list_models") return { modelos: catalog.map((c) => ({ nombre: c.name, categoria: c.cat })) };
+    if (name === "list_models") { const ms = args.dept ? catalog.filter((c) => c.dept === args.dept) : catalog; return { departamentos: deptList, modelos: ms.map((c) => ({ nombre: c.name, categoria: c.cat, departamento: c.dept })) }; }
     if (name === "add_model") {
       const nm = String(args.name || "").trim();
       if (!nm) return { ok: false, error: "Falta el nombre del modelo." };
-      const cat = CATEGORIES.includes(args.cat) ? args.cat : "Samsung";
+      const dept = String(args.dept || DEFAULT_DEPT).trim() || DEFAULT_DEPT;
+      // en Teléfonos la categoría se valida contra las de Android; en otros departamentos es libre
+      const cat = args.cat ? String(args.cat).trim() : (dept === DEFAULT_DEPT ? "Samsung" : dept);
       if (catalog.some((c) => c.name.toLowerCase() === nm.toLowerCase())) return { ok: true, existe: true, modelo: nm };
-      setExtraCatalog((c) => [...c, { name: nm, cat }]);
-      return { ok: true, creado: true, modelo: nm, categoria: cat };
+      setExtraCatalog((c) => [...c, { name: nm, cat, dept }]);
+      return { ok: true, creado: true, modelo: nm, categoria: cat, departamento: dept };
     }
     if (name === "edit_model") {
       const cur = catalog.find((c) => c.name.toLowerCase() === String(args.name || "").trim().toLowerCase());
       if (!cur) return { ok: false, error: `No encontré el modelo "${args.name}".`, modelos: catalog.map((c) => c.name).slice(0, 60) };
       const newName = args.newName ? String(args.newName).trim() : cur.name;
-      const newCat = args.cat && CATEGORIES.includes(args.cat) ? args.cat : cur.cat;
+      const newCat = args.cat ? String(args.cat).trim() : cur.cat;
+      const newDept = args.dept ? String(args.dept).trim() : (cur.dept || DEFAULT_DEPT);
       if (newName.toLowerCase() !== cur.name.toLowerCase() && catalog.some((c) => c.name.toLowerCase() === newName.toLowerCase()))
         return { ok: false, error: `Ya existe "${newName}". Para juntarlos usá merge_models.` };
       const isBase = CATALOG.some((c) => c.name === cur.name);
       if (newName !== cur.name) {
-        if (isBase) { setHiddenModels((h) => (h.includes(cur.name) ? h : [...h, cur.name])); setExtraCatalog((l) => [...l.filter((c) => c.name !== cur.name), { name: newName, cat: newCat }]); }
-        else setExtraCatalog((l) => l.map((c) => (c.name === cur.name ? { name: newName, cat: newCat } : c)));
+        if (isBase) { setHiddenModels((h) => (h.includes(cur.name) ? h : [...h, cur.name])); setExtraCatalog((l) => [...l.filter((c) => c.name !== cur.name), { name: newName, cat: newCat, dept: newDept }]); }
+        else setExtraCatalog((l) => l.map((c) => (c.name === cur.name ? { name: newName, cat: newCat, dept: newDept } : c)));
         migrateSku(cur.name, newName);
       } else {
-        // solo cambia la categoría → override
-        setExtraCatalog((l) => (l.some((c) => c.name === cur.name) ? l.map((c) => (c.name === cur.name ? { name: cur.name, cat: newCat } : c)) : [...l, { name: cur.name, cat: newCat }]));
+        // cambia categoría y/o departamento → override
+        setExtraCatalog((l) => (l.some((c) => c.name === cur.name) ? l.map((c) => (c.name === cur.name ? { name: cur.name, cat: newCat, dept: newDept } : c)) : [...l, { name: cur.name, cat: newCat, dept: newDept }]));
       }
-      return { ok: true, modelo: newName, categoria: newCat, renombrado: newName !== cur.name };
+      return { ok: true, modelo: newName, categoria: newCat, departamento: newDept, renombrado: newName !== cur.name };
     }
     if (name === "delete_model") {
       const cur = catalog.find((c) => c.name.toLowerCase() === String(args.name || "").trim().toLowerCase());
@@ -1769,6 +1776,7 @@ export default function PriceDesk() {
           parseSupplier={parseSupplier} setParseSupplier={setParseSupplier} supplierList={supplierList}
           rawText={rawText} setRawText={setRawText} runParse={runParse} parsing={parsing} parseMsg={parseMsg}
           hideEmpty={hideEmpty} setHideEmpty={setHideEmpty} catalog={catalog} visibleCatalog={visibleCatalog}
+          deptList={deptList} selectedDept={selectedDept} setSelectedDept={setSelectedDept}
           selectAll={selectAll} selectPriced={selectPriced} selectNone={selectNone}
           selectedSkus={selectedSkus} selected={selected} toggleSelected={toggleSelected} setSelected={setSelected}
           aggBySku={aggBySku} freshBySku={freshBySku} lista={lista} listaFor={listaFor}

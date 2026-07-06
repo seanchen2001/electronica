@@ -13,7 +13,7 @@ export default function MesaView({
   // paste & parse (móvil)
   parseSupplier, setParseSupplier, supplierList, rawText, setRawText, runParse, parsing, parseMsg,
   // tabla
-  hideEmpty, setHideEmpty, catalog, visibleCatalog, selectAll, selectPriced, selectNone,
+  hideEmpty, setHideEmpty, catalog, visibleCatalog, deptList, selectedDept, setSelectedDept, selectAll, selectPriced, selectNone,
   selectedSkus, selected, toggleSelected, setSelected,
   aggBySku, freshBySku, lista, listaFor, setListaCell, setCell, marginNum,
   // cotización al cliente
@@ -124,11 +124,21 @@ export default function MesaView({
 
     {/* comparison table */}
     <section style={s.section}>
+      {/* departamentos: cada uno es una lista aparte (Teléfonos / iPhone / Laptops / …) */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {deptList.map((d) => (
+          <button key={d} onClick={() => setSelectedDept(d)}
+            style={{ ...s.planTab, ...(selectedDept === d ? s.planTabOn : {}) }}>{d}</button>
+        ))}
+      </div>
+      {catalog.filter((c) => c.dept === selectedDept).length === 0 && (
+        <div style={s.askHint}>No hay productos en “{selectedDept}” todavía. Agregalos desde el asistente (ej. “agregá el iPhone 16 128GB en el departamento iPhone”).</div>
+      )}
       <div style={s.tableBar}>
         <label style={s.hideToggle}>
           <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} style={s.chk} />
           Ocultar sin precio
-          {hideEmpty && <span style={s.hideCount}> ({catalog.length - visibleCatalog.length})</span>}
+          {hideEmpty && <span style={s.hideCount}> ({catalog.filter((c) => c.dept === selectedDept).length - visibleCatalog.length})</span>}
         </label>
         <span style={s.markGroup}>
           <span style={s.hideCount}>Marcar:</span>
