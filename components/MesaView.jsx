@@ -21,7 +21,6 @@ export default function MesaView({
 }) {
   const s = styles;
   let lastCat = null;
-  const [modelOpen, setModelOpen] = React.useState({}); // colapso por modelo en la Mesa (abierto por defecto)
 
   const askSection = (
     <section style={s.section}>
@@ -190,11 +189,7 @@ export default function MesaView({
           <tbody>
             {(() => {
               const colSpanAll = supplierList.length + 5;
-              // token de RAM/almacenamiento en cualquier formato: 4+64, 12+256, 12/256GB, 12/1TB, 12+1T
-              const STORAGE = /\d+\s*[+/]\s*\d+\s*(?:GB|TB|T)?/i;
-              const modelKey = (n) => { const mm = n.match(STORAGE); return mm ? n.slice(0, mm.index).trim() : n; };
-              const variantLabel = (n, key) => { const rest = n.slice(key.length).replace(/^[\s·–-]+/, "").trim(); return rest || n; };
-              // una fila completa de un SKU; label = lo que se ve en la columna SKU (spec, si es variante)
+              // una fila completa de un SKU; label = lo que se ve en la columna SKU
               const renderRow = (name, label, indent) => {
                 const agg = aggBySku[name];
                 const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
@@ -293,35 +288,13 @@ export default function MesaView({
                   </tr>
                 );
               };
-              // agrupar: categoría → modelo (nombre sin RAM+almacenamiento) → variantes.
-              // Junta TODAS las variantes de un modelo aunque no estén pegadas (ej. una del catálogo base y otra agregada).
-              const cats = [];
-              const catMap = new Map();
-              for (const item of visibleCatalog) {
-                let c = catMap.get(item.cat);
-                if (!c) { c = { cat: item.cat, models: [], modelMap: new Map() }; catMap.set(item.cat, c); cats.push(c); }
-                const key = modelKey(item.name);
-                let m = c.modelMap.get(key);
-                if (!m) { m = { key, variants: [] }; c.modelMap.set(key, m); c.models.push(m); }
-                m.variants.push(item.name);
-              }
+              // PLANO: cada SKU en su propia fila con el nombre COMPLETO (spec incluido),
+              // con un encabezado por categoría. (El nombre y el spec van siempre juntos.)
               const out = [];
-              for (const c of cats) {
-                out.push(<tr key={"cat-" + c.cat}><td colSpan={colSpanAll} style={s.catRow}>{c.cat}</td></tr>);
-                for (const m of c.models) {
-                  // un solo spec → fila normal (nombre completo); varios → cabecera de modelo colapsable + specs indentadas
-                  if (m.variants.length === 1) { out.push(renderRow(m.variants[0], m.variants[0], false)); continue; }
-                  const gkey = c.cat + "|" + m.key;
-                  const open = modelOpen[gkey] !== false;
-                  out.push(
-                    <tr key={"mdl-" + gkey} onClick={() => setModelOpen((o) => ({ ...o, [gkey]: !open }))} style={{ cursor: "pointer", background: "#0f131c" }}>
-                      <td colSpan={colSpanAll} style={{ ...s.td, textAlign: "left", color: "#cfd6e4", fontWeight: 600 }}>
-                        {open ? "▾ " : "▸ "}{m.key}<span style={{ color: "#6b7385", fontWeight: 400, fontSize: 11 }}> · {m.variants.length} specs</span>
-                      </td>
-                    </tr>
-                  );
-                  if (open) for (const v of m.variants) out.push(renderRow(v, variantLabel(v, m.key), true));
-                }
+              let lc = null;
+              for (const item of visibleCatalog) {
+                if (item.cat !== lc) { lc = item.cat; out.push(<tr key={"cat-" + item.cat}><td colSpan={colSpanAll} style={s.catRow}>{item.cat}</td></tr>); }
+                out.push(renderRow(item.name, item.name, false));
               }
               return out;
             })()}

@@ -89,7 +89,8 @@ export default function PriceDesk() {
     // modelos agregados que no pisan a uno base
     for (const c of extraCatalog) { if (!baseNames.has(c.name)) push(c); }
     const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
-    return merged.map((c, i) => [c, i]).sort((a, b) => (idx(a[0]) - idx(b[0])) || (a[1] - b[1])).map((x) => x[0]);
+    // ordenar por categoría y, dentro de cada una, por nombre (así A27 cae con los otros A, etc.)
+    return merged.sort((a, b) => (idx(a) - idx(b)) || a.name.localeCompare(b.name, "en", { numeric: true }));
   }, [extraCatalog, hiddenModels]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
