@@ -10,7 +10,7 @@ import {
 // so the numbers never land in the public bundle.
 import { pdf } from "@react-pdf/renderer";
 import InvoiceDoc, { RemitosDoc } from "./InvoiceDoc.jsx";
-import { AGENT_TOOLS, buildAgentSystem, REVIEW_SYSTEM } from "./lib/agent-tools.js";
+import { AGENT_TOOLS, buildAgentSystem, REVIEW_SYSTEM, buildSupervisorSystem, SUPERVISOR_LOW_RISK } from "./lib/agent-tools.js";
 import styles from "./styles.js";
 import PnLView from "./components/PnLView.jsx";
 import HistorialView from "./components/HistorialView.jsx";
@@ -41,7 +41,7 @@ import {
   negotiationReport as negotiationReportPure,
 } from "./lib/pricing.js";
 import {
-  callGemini, callGeminiTools, parseSupplierQuote, matchModels,
+  callGemini, callGeminiTools, parseSupplierQuote, matchModels, SUPERVISOR_MODEL,
   buildParseSystem, buildMarkSystem, DESK_SYSTEM, stripFences,
   classifyIntent as classifyIntentAI,
   resolveSku as resolveSkuPure,
@@ -76,6 +76,8 @@ export default function PriceDesk() {
   // proveedores editables (sembrados de la constante, se pueden agregar/sacar)
   const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
   const [supplierDepts, setSupplierDepts] = useState(() => load("desk-supplier-depts-v1", {})); // proveedor -> [departamentos] (qué columnas aparecen en cada depto)
+  const [knowledgeBase, setKnowledgeBase] = useState(() => load("desk-knowledge-v1", [])); // reglas aprendidas (memoria del sistema) que usa el agente
+  const [superOn, setSuperOn] = useState(() => load("desk-supervisor-on", true)); // supervisor (Gemini Pro) activado
   const [newSupplier, setNewSupplier] = useState("");
   // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
   // agregado después. Si no, los modelos nuevos quedan en una sección aparte al final.
@@ -219,6 +221,8 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
   useEffect(() => { try { localStorage.setItem("desk-supplier-depts-v1", JSON.stringify(supplierDepts)); } catch {} }, [supplierDepts]);
+  useEffect(() => { try { localStorage.setItem("desk-knowledge-v1", JSON.stringify(knowledgeBase)); } catch {} }, [knowledgeBase]);
+  useEffect(() => { try { localStorage.setItem("desk-supervisor-on", JSON.stringify(superOn)); } catch {} }, [superOn]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
   useEffect(() => { try { localStorage.setItem(PHIST_KEY, JSON.stringify(priceHistory)); } catch {} }, [priceHistory]);
@@ -298,6 +302,7 @@ export default function PriceDesk() {
         setLedger((lg) => resolve(d.ledger, lg, "ledger"));
         setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
         setSupplierDepts((sd) => resolveObj(d.supplierDepts, sd, "supplierDepts"));
+        setKnowledgeBase((kb) => resolve(d.knowledge, kb, "knowledge"));
         setAliases((al) => resolveObj(d.aliases, al, "aliases"));
         if (!skipObjects) {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
@@ -338,6 +343,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("ledger", ledger); }, [ledger]);
   useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
   useEffect(() => { syncUp("supplierDepts", supplierDepts); }, [supplierDepts]);
+  useEffect(() => { syncUp("knowledge", knowledgeBase); }, [knowledgeBase]);
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
@@ -1451,6 +1457,31 @@ export default function PriceDesk() {
       setSupplierDepts((m) => { const n = { ...m }; if (depts.length) n[sp] = depts; else delete n[sp]; return n; });
       return { ok: true, proveedor: sp, departamentos: depts.length ? depts : "auto (por uso)" };
     }
+    if (name === "learn_rule") {
+      const rule = String(args.rule || "").trim();
+      if (!rule) return { ok: false, error: "Falta la regla." };
+      setKnowledgeBase((kb) => (kb.some((r) => r.toLowerCase() === rule.toLowerCase()) ? kb : [...kb, rule]));
+      return { ok: true, aprendida: rule };
+    }
+    if (name === "forget_rule") {
+      const q = String(args.rule || "").trim().toLowerCase();
+      if (!q) return { ok: false, error: "Falta qué olvidar." };
+      setKnowledgeBase((kb) => kb.filter((r) => !r.toLowerCase().includes(q)));
+      return { ok: true };
+    }
+    if (name === "rename_category") {
+      const from = String(args.from || "").trim().toLowerCase();
+      const to = String(args.to || "").trim();
+      if (!from || !to) return { ok: false, error: "Faltan la categoría actual y la nueva." };
+      const affected = catalog.filter((c) => (c.cat || "").toLowerCase() === from && (!args.dept || c.dept === args.dept));
+      if (!affected.length) return { ok: false, error: `No hay modelos en la categoría "${args.from}".` };
+      setExtraCatalog((l) => {
+        const n = [...l];
+        for (const m of affected) { const i = n.findIndex((c) => c.name === m.name); if (i >= 0) n[i] = { ...n[i], cat: to }; else n.push({ name: m.name, cat: to, dept: m.dept }); }
+        return n;
+      });
+      return { ok: true, categoria: to, modelos: affected.length };
+    }
     // ---- READ: listar clientes / envíos / proveedores ----
     if (name === "list_clients") return { clientes: clients.map((c) => ({ nombre: c.name, direccion: c.address || "", ruc: c.ruc || "", telefono: c.phone || "", cuenta_corriente: !!c.cuentaCorriente })) };
     if (name === "list_shippings") return { envios: shippings.map((sh) => ({ nombre: sh.label || sh.notify, notify: sh.notify || "", direccion: sh.direccion || "", telefono: sh.telefono || "", contacto: sh.contacto || "" })) };
@@ -1676,13 +1707,38 @@ export default function PriceDesk() {
     const d = pendingDelete; setPendingDelete(null);
     if (d?.run) d.run();
   }
+  // Supervisor (Gemini Pro): revisa lo que hizo el worker, corrige lo de BAJO RIESGO y aprende reglas.
+  // Lo financiero/destructivo no lo toca (solo lo marca). No debe romper el flujo si falla.
+  const READONLY_TOOLS = new Set(["best_supplier", "order_summary", "list_orders", "list_models", "list_suppliers", "list_clients", "list_shippings", "quote_analysis", "build_quote", "negotiation_report", "supplier_ask", "account_balance", "list_accounts", "send_document"]);
+  async function runSupervisor(userText, actions) {
+    if (!superOn || !apiKey.trim()) return;
+    const mutating = (actions || []).filter((a) => !READONLY_TOOLS.has(a.name));
+    if (!mutating.length) return;
+    try {
+      const sys = buildSupervisorSystem({ depts: deptList, categories: CATEGORIES, suppliers: supplierList, learned: knowledgeBase });
+      const payload = { pedido_usuario: userText || "", acciones_del_worker: mutating.map((a) => ({ tool: a.name, args: a.args })) };
+      const raw = await callGemini({ system: sys, content: JSON.stringify(payload), apiKey: apiKey.trim(), json: true, maxTokens: 1024, model: SUPERVISOR_MODEL });
+      let out; try { out = JSON.parse(stripFences(raw)); } catch { return; }
+      const learn = Array.isArray(out.learn) ? out.learn.map((r) => String(r).trim()).filter(Boolean) : [];
+      const fixes = Array.isArray(out.fixes) ? out.fixes : [];
+      const issues = Array.isArray(out.issues) ? out.issues.map((x) => String(x)).filter(Boolean) : [];
+      if (learn.length) setKnowledgeBase((kb) => { const seen = new Set(kb.map((r) => r.toLowerCase())); const add = learn.filter((r) => !seen.has(r.toLowerCase())); return add.length ? [...kb, ...add] : kb; });
+      let applied = 0;
+      for (const f of fixes) { if (f && SUPERVISOR_LOW_RISK.includes(f.tool)) { try { await runTool(f.tool, f.args || {}); applied++; } catch { /* skip */ } } }
+      const notes = [];
+      if (applied) notes.push(`corregí ${applied} cosa(s)`);
+      if (learn.length) notes.push(`aprendí: ${learn.join(" · ")}`);
+      if (issues.length) notes.push(`⚠ para revisar: ${issues.join(" · ")}`);
+      if (notes.length) setAgentLog((l) => [...l, { role: "system", text: "🧭 Supervisor — " + notes.join(" · ") }]);
+    } catch { /* el supervisor nunca rompe el flujo del worker */ }
+  }
   async function runAgent(userText, file = null) {
     if (!apiKey.trim()) { setAgentLog((l) => [...l, { role: "system", text: "Cargá la contraseña / API key primero." }]); return; }
     if (!userText.trim() && !file) return;
     setDocType("factura");
     setAgentBusy(true);
     setAgentLog((l) => [...l, { role: "you", text: (userText || "") + (file ? "  📷 (imagen)" : "") }]);
-    const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean), shippingNames: shippings.map((sh) => sh.label || sh.notify).filter(Boolean) });
+    const system = buildAgentSystem({ catalogNames, suppliers: supplierList, clientNames: clients.map((c) => c.name).filter(Boolean), shippingNames: shippings.map((sh) => sh.label || sh.notify).filter(Boolean), learned: knowledgeBase });
     const stateSnapshot = { orden_actual: orderSummaryData() };
     const parts = [];
     const quoteImages = [];
@@ -1690,6 +1746,7 @@ export default function PriceDesk() {
     lastQuoteRef.current = { text: userText || "", images: quoteImages }; // para load_prices
     parts.push({ text: (userText || "(mirá la imagen adjunta para contexto)") + "\n\nESTADO: " + JSON.stringify(stateSnapshot) });
     const contents = [...agentContents.current, { role: "user", parts }];
+    const turnActions = []; // acciones del worker en este turno (para el supervisor)
     try {
       for (let step = 0; step < 8; step++) {
         const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048 });
@@ -1706,6 +1763,7 @@ export default function PriceDesk() {
           const result = await runTool(fc.name, fc.args || {});
           const rs = JSON.stringify(result);
           setAgentLog((l) => [...l, { role: "tool", text: `↳ ${rs.length > 400 ? rs.slice(0, 400) + "…" : rs}` }]);
+          turnActions.push({ name: fc.name, args: fc.args || {} });
           responses.push({ functionResponse: { name: fc.name, response: result } });
           if (result && result.status === "needs_confirmation") paused = true;
         }
@@ -1713,6 +1771,7 @@ export default function PriceDesk() {
         if (paused) break;
       }
       agentContents.current = contents;
+      await runSupervisor(userText, turnActions); // el supervisor (Pro) revisa, corrige lo de bajo riesgo y aprende
     } catch (e) {
       setAgentLog((l) => [...l, { role: "system", text: "Error: " + (e?.message || e) }]);
     } finally {
@@ -1752,6 +1811,7 @@ export default function PriceDesk() {
     <ChatBox
       chatOpen={chatOpen} setChatOpen={setChatOpen} chatScrollRef={chatScrollRef}
       agentLog={agentLog} showSteps={showSteps} setShowSteps={setShowSteps} resetAgent={resetAgent} agentBusy={agentBusy}
+      superOn={superOn} setSuperOn={setSuperOn} knowledgeCount={knowledgeBase.length}
       chatText={chatText} setChatText={setChatText} chatImage={chatImage} setChatImage={setChatImage}
       onChatPaste={onChatPaste} submitChat={submitChat} busyChat={busyChat} />
   );

@@ -5,6 +5,7 @@ import styles from "../styles.js";
 export default function ChatBox({
   chatOpen, setChatOpen, chatScrollRef,
   agentLog, showSteps, setShowSteps, resetAgent, agentBusy,
+  superOn, setSuperOn, knowledgeCount,
   chatText, setChatText, chatImage, setChatImage, onChatPaste, submitChat, busyChat,
 }) {
   const s = styles;
@@ -21,9 +22,15 @@ export default function ChatBox({
           <>
             {agentLog.length > 0 && (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <label style={{ fontSize: 10.5, color: "#6b7385", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-                  <input type="checkbox" checked={showSteps} onChange={(e) => setShowSteps(e.target.checked)} /> ver pasos
-                </label>
+                <span style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
+                  <label style={{ fontSize: 10.5, color: "#6b7385", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                    <input type="checkbox" checked={showSteps} onChange={(e) => setShowSteps(e.target.checked)} /> ver pasos
+                  </label>
+                  <label style={{ fontSize: 10.5, color: superOn ? "#8ee0a8" : "#6b7385", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+                    title="Supervisor (Gemini Pro): revisa, corrige lo de bajo riesgo y aprende reglas del sistema">
+                    <input type="checkbox" checked={!!superOn} onChange={(e) => setSuperOn(e.target.checked)} /> 🧭 supervisor{knowledgeCount ? ` (${knowledgeCount})` : ""}
+                  </label>
+                </span>
                 <button onClick={resetAgent} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>Nueva conversación</button>
               </div>
             )}
