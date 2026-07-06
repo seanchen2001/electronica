@@ -96,6 +96,13 @@ export default function PriceDesk() {
   }, [extraCatalog, hiddenModels]);
   // departamentos disponibles: los fijos + los que existan en el catálogo (para que aparezca la pestaña)
   const deptList = useMemo(() => [...new Set([...DEPTS, ...catalog.map((c) => c.dept)])], [catalog]);
+  // proveedores del departamento activo: los que YA tienen algún precio cargado ahí (auto por uso).
+  // Si el depto todavía no tiene precios, mostramos todos para poder empezar a cargar.
+  const deptSuppliers = useMemo(() => {
+    const skus = catalog.filter((c) => c.dept === selectedDept).map((c) => c.name);
+    const serving = supplierList.filter((sp) => skus.some((sku) => typeof prices[sku]?.[sp] === "number"));
+    return serving.length ? serving : supplierList;
+  }, [catalog, selectedDept, supplierList, prices]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
@@ -1776,7 +1783,7 @@ export default function PriceDesk() {
           parseSupplier={parseSupplier} setParseSupplier={setParseSupplier} supplierList={supplierList}
           rawText={rawText} setRawText={setRawText} runParse={runParse} parsing={parsing} parseMsg={parseMsg}
           hideEmpty={hideEmpty} setHideEmpty={setHideEmpty} catalog={catalog} visibleCatalog={visibleCatalog}
-          deptList={deptList} selectedDept={selectedDept} setSelectedDept={setSelectedDept}
+          deptList={deptList} selectedDept={selectedDept} setSelectedDept={setSelectedDept} deptSuppliers={deptSuppliers}
           selectAll={selectAll} selectPriced={selectPriced} selectNone={selectNone}
           selectedSkus={selectedSkus} selected={selected} toggleSelected={toggleSelected} setSelected={setSelected}
           aggBySku={aggBySku} freshBySku={freshBySku} lista={lista} listaFor={listaFor}

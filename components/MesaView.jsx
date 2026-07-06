@@ -13,7 +13,7 @@ export default function MesaView({
   // paste & parse (móvil)
   parseSupplier, setParseSupplier, supplierList, rawText, setRawText, runParse, parsing, parseMsg,
   // tabla
-  hideEmpty, setHideEmpty, catalog, visibleCatalog, deptList, selectedDept, setSelectedDept, selectAll, selectPriced, selectNone,
+  hideEmpty, setHideEmpty, catalog, visibleCatalog, deptList, selectedDept, setSelectedDept, deptSuppliers, selectAll, selectPriced, selectNone,
   selectedSkus, selected, toggleSelected, setSelected,
   aggBySku, freshBySku, lista, listaFor, setListaCell, setCell, marginNum,
   // cotización al cliente
@@ -189,7 +189,7 @@ export default function MesaView({
           <thead>
             <tr>
               <th style={{ ...s.th, ...s.thSku }}>SKU</th>
-              {supplierList.map((sp) => <th key={sp} style={s.th}>{sp}</th>)}
+              {deptSuppliers.map((sp) => <th key={sp} style={s.th}>{sp}</th>)}
               <th style={s.th}>Minimo</th>
               <th style={s.th}>Medio</th>
               <th style={s.th}>Lista</th>
@@ -198,7 +198,7 @@ export default function MesaView({
           </thead>
           <tbody>
             {(() => {
-              const colSpanAll = supplierList.length + 5;
+              const colSpanAll = deptSuppliers.length + 5;
               // una fila completa de un SKU; label = lo que se ve en la columna SKU
               const renderRow = (name, label, indent) => {
                 const agg = aggBySku[name];
@@ -215,7 +215,7 @@ export default function MesaView({
                         <span>{label}</span>
                       </label>
                     </td>
-                    {supplierList.map((sp) => {
+                    {deptSuppliers.map((sp) => {
                       const v = prices[name]?.[sp];
                       const has = typeof v === "number";
                       // escala por cantidad: v ya es el precio más barato; mostramos la cantidad mínima para conseguirlo
