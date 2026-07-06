@@ -90,9 +90,10 @@ export default function PriceDesk() {
     // modelos agregados que no pisan a uno base
     for (const c of extraCatalog) { if (!baseNames.has(c.name)) push(c); }
     const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
-    // cada modelo tiene un departamento (default Teléfonos); ordenar por categoría y, dentro, por nombre
-    return merged.map((c) => ({ ...c, dept: c.dept || DEFAULT_DEPT }))
-      .sort((a, b) => (idx(a) - idx(b)) || a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name, "en", { numeric: true }));
+    // cada modelo tiene departamento (default Teléfonos) y categoría; ordenar por categoría y, dentro, por nombre
+    // (defensivo: hay registros viejos sin cat/nombre → String(... || "") para no romper el render)
+    return merged.map((c) => ({ ...c, cat: c.cat || "Otros", dept: c.dept || DEFAULT_DEPT }))
+      .sort((a, b) => (idx(a) - idx(b)) || String(a.cat || "").localeCompare(String(b.cat || "")) || String(a.name || "").localeCompare(String(b.name || ""), "en", { numeric: true }));
   }, [extraCatalog, hiddenModels]);
   // departamentos disponibles: los fijos + los que existan en el catálogo (para que aparezca la pestaña)
   const deptList = useMemo(() => [...new Set([...DEPTS, ...catalog.map((c) => c.dept)])], [catalog]);
