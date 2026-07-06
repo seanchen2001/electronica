@@ -82,10 +82,12 @@ export default function PriceDesk() {
     const extraByName = new Map(extraCatalog.map((c) => [c.name, c]));
     const baseNames = new Set(CATALOG.map((c) => c.name));
     const merged = [];
+    const seen = new Set(); // dedup por nombre: cada modelo aparece UNA sola vez
+    const push = (c) => { if (!hidden.has(c.name) && !seen.has(c.name)) { seen.add(c.name); merged.push(c); } };
     // modelos base (con override de categoría si hay un extra del mismo nombre), salvo los ocultados
-    for (const c of CATALOG) { if (!hidden.has(c.name)) merged.push(extraByName.get(c.name) || c); }
+    for (const c of CATALOG) push(extraByName.get(c.name) || c);
     // modelos agregados que no pisan a uno base
-    for (const c of extraCatalog) { if (!baseNames.has(c.name) && !hidden.has(c.name)) merged.push(c); }
+    for (const c of extraCatalog) { if (!baseNames.has(c.name)) push(c); }
     const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
     return merged.map((c, i) => [c, i]).sort((a, b) => (idx(a[0]) - idx(b[0])) || (a[1] - b[1])).map((x) => x[0]);
   }, [extraCatalog, hiddenModels]);
@@ -227,6 +229,16 @@ export default function PriceDesk() {
     if (changed) setPrices(next);
     tiersMigrated.current = true;
   }, [tiers]);
+  // limpiar duplicados guardados en el catálogo agregado (una vez, tras cargar)
+  const catDeduped = useRef(false);
+  useEffect(() => {
+    if (catDeduped.current) return;
+    if (!extraCatalog.length) return;
+    const seen = new Set(); const clean = [];
+    for (const c of extraCatalog) { if (seen.has(c.name)) continue; seen.add(c.name); clean.push(c); }
+    if (clean.length !== extraCatalog.length) setExtraCatalog(clean);
+    catDeduped.current = true;
+  }, [extraCatalog]);
 
   async function pushStore(key, value) {
     try {
