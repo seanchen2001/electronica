@@ -74,7 +74,13 @@ export default function PriceDesk() {
   // proveedores editables (sembrados de la constante, se pueden agregar/sacar)
   const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
   const [newSupplier, setNewSupplier] = useState("");
-  const catalog = useMemo(() => [...CATALOG, ...extraCatalog], [extraCatalog]);
+  // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
+  // agregado después. Si no, los modelos nuevos quedan en una sección aparte al final.
+  const catalog = useMemo(() => {
+    const merged = [...CATALOG, ...extraCatalog];
+    const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
+    return merged.map((c, i) => [c, i]).sort((a, b) => (idx(a[0]) - idx(b[0])) || (a[1] - b[1])).map((x) => x[0]);
+  }, [extraCatalog]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
