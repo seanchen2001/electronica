@@ -75,6 +75,7 @@ export default function PriceDesk() {
   const [hiddenModels, setHiddenModels] = useState(() => load("desk-hidden-models-v1", [])); // modelos base ocultados (borrar/renombrar/unificar)
   // proveedores editables (sembrados de la constante, se pueden agregar/sacar)
   const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
+  const [supplierDepts, setSupplierDepts] = useState(() => load("desk-supplier-depts-v1", {})); // proveedor -> [departamentos] (qué columnas aparecen en cada depto)
   const [newSupplier, setNewSupplier] = useState("");
   // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
   // agregado después. Si no, los modelos nuevos quedan en una sección aparte al final.
@@ -107,9 +108,14 @@ export default function PriceDesk() {
   // Si el depto todavía no tiene precios, mostramos todos para poder empezar a cargar. (después de `prices`, evita TDZ)
   const deptSuppliers = useMemo(() => {
     const skus = catalog.filter((c) => c.dept === selectedDept).map((c) => c.name);
-    const serving = supplierList.filter((sp) => skus.some((sku) => typeof prices[sku]?.[sp] === "number"));
-    return serving.length ? serving : supplierList;
-  }, [catalog, selectedDept, supplierList, prices]);
+    const hasPrice = (sp) => skus.some((sku) => typeof prices[sku]?.[sp] === "number");
+    const serving = supplierList.filter((sp) => {
+      const assigned = supplierDepts[sp];
+      if (Array.isArray(assigned) && assigned.length) return assigned.includes(selectedDept); // asignación explícita manda
+      return hasPrice(sp); // sin asignar → aparece donde tenga precios (auto por uso)
+    });
+    return serving.length ? serving : supplierList; // depto sin proveedores aún → todos (para poder arrancar)
+  }, [catalog, selectedDept, supplierList, prices, supplierDepts]);
   const [priceHistory, setPriceHistory] = useState(() => load(PHIST_KEY, [])); // append-only: {sku,sup,price,ts} para analítica
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
@@ -212,6 +218,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem("desk-hidden-models-v1", JSON.stringify(hiddenModels)); } catch {} }, [hiddenModels]);
   useEffect(() => { try { localStorage.setItem(LEDGER_KEY, JSON.stringify(ledger)); } catch {} }, [ledger]);
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
+  useEffect(() => { try { localStorage.setItem("desk-supplier-depts-v1", JSON.stringify(supplierDepts)); } catch {} }, [supplierDepts]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
   useEffect(() => { try { localStorage.setItem(PHIST_KEY, JSON.stringify(priceHistory)); } catch {} }, [priceHistory]);
@@ -290,6 +297,7 @@ export default function PriceDesk() {
         setHiddenModels((h) => resolve(d.hiddenModels, h, "hiddenModels"));
         setLedger((lg) => resolve(d.ledger, lg, "ledger"));
         setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
+        setSupplierDepts((sd) => resolveObj(d.supplierDepts, sd, "supplierDepts"));
         setAliases((al) => resolveObj(d.aliases, al, "aliases"));
         if (!skipObjects) {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
@@ -329,6 +337,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("lista", lista); }, [lista]);
   useEffect(() => { syncUp("ledger", ledger); }, [ledger]);
   useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
+  useEffect(() => { syncUp("supplierDepts", supplierDepts); }, [supplierDepts]);
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
@@ -1427,14 +1436,25 @@ export default function PriceDesk() {
     if (name === "add_supplier") {
       const nm = String(args.name || "").trim();
       if (!nm) return { ok: false, error: "Falta el nombre del proveedor." };
-      if (supplierList.some((s) => s.toLowerCase() === nm.toLowerCase())) return { ok: true, existe: true, proveedor: nm };
-      setSupplierList((l) => [...l, nm]);
-      return { ok: true, creado: true, proveedor: nm };
+      const existing = supplierList.find((s) => s.toLowerCase() === nm.toLowerCase());
+      const canon = existing || nm;
+      if (!existing) setSupplierList((l) => [...l, nm]);
+      // departamentos que atiende (qué columnas aparecen) — opcional
+      const depts = Array.isArray(args.depts) ? args.depts.map((d) => String(d).trim()).filter(Boolean) : [];
+      if (depts.length) setSupplierDepts((m) => ({ ...m, [canon]: depts }));
+      return { ok: true, creado: !existing, proveedor: canon, departamentos: depts.length ? depts : undefined };
+    }
+    if (name === "set_supplier_depts") {
+      const sp = supplierList.find((s) => s.toLowerCase() === String(args.supplier || "").trim().toLowerCase());
+      if (!sp) return { ok: false, error: `No encontré el proveedor "${args.supplier}".`, proveedores: supplierList };
+      const depts = Array.isArray(args.depts) ? args.depts.map((d) => String(d).trim()).filter(Boolean) : [];
+      setSupplierDepts((m) => { const n = { ...m }; if (depts.length) n[sp] = depts; else delete n[sp]; return n; });
+      return { ok: true, proveedor: sp, departamentos: depts.length ? depts : "auto (por uso)" };
     }
     // ---- READ: listar clientes / envíos / proveedores ----
     if (name === "list_clients") return { clientes: clients.map((c) => ({ nombre: c.name, direccion: c.address || "", ruc: c.ruc || "", telefono: c.phone || "", cuenta_corriente: !!c.cuentaCorriente })) };
     if (name === "list_shippings") return { envios: shippings.map((sh) => ({ nombre: sh.label || sh.notify, notify: sh.notify || "", direccion: sh.direccion || "", telefono: sh.telefono || "", contacto: sh.contacto || "" })) };
-    if (name === "list_suppliers") return { proveedores: supplierList };
+    if (name === "list_suppliers") return { departamentos: deptList, proveedores: supplierList.map((sp) => ({ nombre: sp, departamentos: supplierDepts[sp] || "auto (aparece donde tenga precios)" })) };
     // ---- MODELOS (catálogo): leer / agregar / editar / borrar / unificar ----
     // mover todos los datos de precio (prices/tiers/times/lista/priceHistory) de un SKU a otro
     const migrateSku = (from, to) => {
