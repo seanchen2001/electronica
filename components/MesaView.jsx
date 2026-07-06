@@ -9,7 +9,7 @@ export default function MesaView({
   // ask the desk (móvil)
   askMode, setAskMode, query, setQuery, asking, submitAsk, onAskPaste, markFromImage, answer, answerErr, markMsg,
   // toolbar / snapshots
-  saveSnapshot, expireAll, snapshots, prevSnap, loadSeed, prices,
+  saveSnapshot, expireAll, snapshots, prevSnap, loadSeed, prices, tiers,
   // paste & parse (móvil)
   parseSupplier, setParseSupplier, supplierList, rawText, setRawText, runParse, parsing, parseMsg,
   // tabla
@@ -213,6 +213,13 @@ export default function MesaView({
                     {supplierList.map((sp) => {
                       const v = prices[name]?.[sp];
                       const has = typeof v === "number";
+                      // escala por cantidad: v ya es el precio más barato; mostramos la cantidad mínima para conseguirlo
+                      const tArr = tiers?.[name]?.[sp];
+                      let tierMinQty = null;
+                      if (Array.isArray(tArr) && tArr.length > 1) {
+                        const cheap = Math.min(...tArr.map((x) => x.price).filter((p) => typeof p === "number"));
+                        tierMinQty = tArr.find((x) => x.price === cheap)?.min ?? null;
+                      }
                       const state = freshBySku[name]?.[sp]; // recent | updated | expired | undefined
                       const isFresh = state && state !== "expired";
                       const isBest = isFresh && agg.count > 0 && v === agg.min;
@@ -249,6 +256,12 @@ export default function MesaView({
                               style={{ ...s.cellInput, ...(inColor || {}) }}
                               inputMode="decimal"
                             />
+                            {tierMinQty != null && (
+                              <span title={"Escala x cantidad:\n" + tArr.map((x) => `${x.min}+ pzs → $${x.price}`).join("\n")}
+                                style={{ fontSize: 9, color: "#c084fc", marginLeft: 2, whiteSpace: "nowrap", cursor: "help" }}>
+                                mín {tierMinQty}u
+                              </span>
+                            )}
                             {trend && (
                               <span style={trend.up ? s.trendUp : s.trendDown}
                                 title={`Semana pasada: $${Math.round(trend.prev)} → ahora $${Math.round(v)} (${trend.up ? "+" : "−"}${Math.abs(trend.pct).toFixed(0)}%)`}>

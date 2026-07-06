@@ -193,6 +193,25 @@ export default function PriceDesk() {
   const dbOn = useRef(false);
   const storeLoaded = useRef(false);
   const saveTimers = useRef({});
+  // Migración (una vez, tras cargar la DB): el precio base de un modelo con escala pasa a ser
+  // el del escalón MÁS BARATO. Así la Mesa/Mín/Medio/Client/Lista muestran el mejor precio, no el de comprar poco.
+  const tiersMigrated = useRef(false);
+  useEffect(() => {
+    if (tiersMigrated.current) return;
+    if (!tiers || !Object.keys(tiers).length) return;
+    let changed = false;
+    const next = { ...prices };
+    for (const sku of Object.keys(tiers)) {
+      for (const sup of Object.keys(tiers[sku] || {})) {
+        const t = tiers[sku][sup];
+        if (!Array.isArray(t) || t.length < 2) continue;
+        const cheap = Math.min(...t.map((x) => x.price).filter((p) => typeof p === "number"));
+        if (Number.isFinite(cheap) && next[sku]?.[sup] !== cheap) { next[sku] = { ...(next[sku] || {}), [sup]: cheap }; changed = true; }
+      }
+    }
+    if (changed) setPrices(next);
+    tiersMigrated.current = true;
+  }, [tiers]);
 
   async function pushStore(key, value) {
     try {
@@ -1646,7 +1665,7 @@ export default function PriceDesk() {
           submitAsk={submitAsk} onAskPaste={onAskPaste} markFromImage={markFromImage}
           answer={answer} answerErr={answerErr} markMsg={markMsg}
           saveSnapshot={saveSnapshot} expireAll={expireAll} snapshots={snapshots} prevSnap={prevSnap}
-          loadSeed={loadSeed} prices={prices}
+          loadSeed={loadSeed} prices={prices} tiers={tiers}
           parseSupplier={parseSupplier} setParseSupplier={setParseSupplier} supplierList={supplierList}
           rawText={rawText} setRawText={setRawText} runParse={runParse} parsing={parsing} parseMsg={parseMsg}
           hideEmpty={hideEmpty} setHideEmpty={setHideEmpty} catalog={catalog} visibleCatalog={visibleCatalog}
