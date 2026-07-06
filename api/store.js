@@ -10,7 +10,7 @@
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_KEY;
 // arrays: clients/shippings/invoices/snapshots/catalog ; objetos: prices/times/lista
-const KEYS = ["clients", "shippings", "invoices", "snapshots", "catalog", "prices", "times", "lista", "ledger", "suppliers", "aliases", "tiers", "priceHistory", "drafts", "trash", "hiddenModels", "supplierDepts", "knowledge"];
+const KEYS = ["clients", "shippings", "invoices", "snapshots", "catalog", "prices", "times", "lista", "ledger", "suppliers", "aliases", "tiers", "priceHistory", "drafts", "trash", "hiddenModels", "supplierDepts", "knowledge", "ops"];
 const configured = () => !!(URL_ && KEY);
 const hdr = () => ({ apikey: KEY, Authorization: `Bearer ${KEY}`, "content-type": "application/json" });
 
@@ -29,7 +29,7 @@ export default async function handler(req, res) {
     if (req.method === "GET") {
       const r = await fetch(`${URL_}/rest/v1/kv?select=key,value`, { headers: hdr() });
       const rows = await r.json();
-      const out = { configured: true, clients: [], shippings: [], invoices: [], snapshots: [], catalog: [], prices: {}, times: {}, lista: {}, ledger: [], suppliers: [], aliases: {}, tiers: {}, priceHistory: [], drafts: [], trash: [], hiddenModels: [], supplierDepts: {}, knowledge: [] };
+      const out = { configured: true, clients: [], shippings: [], invoices: [], snapshots: [], catalog: [], prices: {}, times: {}, lista: {}, ledger: [], suppliers: [], aliases: {}, tiers: {}, priceHistory: [], drafts: [], trash: [], hiddenModels: [], supplierDepts: {}, knowledge: [], ops: {} };
       for (const row of Array.isArray(rows) ? rows : []) if (row.key in out) out[row.key] = row.value;
       res.status(200).json(out);
       return;

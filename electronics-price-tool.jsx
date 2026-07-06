@@ -77,6 +77,7 @@ export default function PriceDesk() {
   const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
   const [supplierDepts, setSupplierDepts] = useState(() => load("desk-supplier-depts-v1", {})); // proveedor -> [departamentos] (qué columnas aparecen en cada depto)
   const [knowledgeBase, setKnowledgeBase] = useState(() => load("desk-knowledge-v1", [])); // reglas aprendidas (memoria del sistema) que usa el agente
+  const [opsTracking, setOpsTracking] = useState(() => load("desk-ops-v1", {})); // seguimiento post-venta por factura(ts): { afuera, local, pago }
   const [superOn, setSuperOn] = useState(() => load("desk-supervisor-on", true)); // supervisor (Gemini Pro) activado
   const [newSupplier, setNewSupplier] = useState("");
   // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
@@ -222,6 +223,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem(SUPP_KEY, JSON.stringify(supplierList)); } catch {} }, [supplierList]);
   useEffect(() => { try { localStorage.setItem("desk-supplier-depts-v1", JSON.stringify(supplierDepts)); } catch {} }, [supplierDepts]);
   useEffect(() => { try { localStorage.setItem("desk-knowledge-v1", JSON.stringify(knowledgeBase)); } catch {} }, [knowledgeBase]);
+  useEffect(() => { try { localStorage.setItem("desk-ops-v1", JSON.stringify(opsTracking)); } catch {} }, [opsTracking]);
   useEffect(() => { try { localStorage.setItem("desk-supervisor-on", JSON.stringify(superOn)); } catch {} }, [superOn]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
@@ -303,6 +305,7 @@ export default function PriceDesk() {
         setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
         setSupplierDepts((sd) => resolveObj(d.supplierDepts, sd, "supplierDepts"));
         setKnowledgeBase((kb) => resolve(d.knowledge, kb, "knowledge"));
+        setOpsTracking((o) => resolveObj(d.ops, o, "ops"));
         setAliases((al) => resolveObj(d.aliases, al, "aliases"));
         if (!skipObjects) {
           setPrices((p) => resolveObj(d.prices, p, "prices"));
@@ -344,6 +347,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("suppliers", supplierList); }, [supplierList]);
   useEffect(() => { syncUp("supplierDepts", supplierDepts); }, [supplierDepts]);
   useEffect(() => { syncUp("knowledge", knowledgeBase); }, [knowledgeBase]);
+  useEffect(() => { syncUp("ops", opsTracking); }, [opsTracking]);
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
@@ -1041,6 +1045,24 @@ export default function PriceDesk() {
   // Analítica (pestaña + tool del agente) — derivada del historial, sin storage propio
   const analytics = useMemo(() => analyticsData({ invoiceHistory }), [invoiceHistory]);
 
+  // Operaciones post-venta: por cada factura, 3 checks (entrega afuera / local / pago).
+  // pendingOps = las que tienen algo sin cerrar, ordenadas por más atrasado (para reclamar).
+  function setOpsCheck(ts, key, val) { setOpsTracking((o) => ({ ...o, [ts]: { ...(o[ts] || {}), [key]: val } })); }
+  const pendingOps = useMemo(() => {
+    const now = Date.now();
+    const out = [];
+    for (const f of invoiceHistory) {
+      if (f.type !== "factura") continue;
+      const t = opsTracking[f.ts] || {};
+      const afuera = !!t.afuera, local = !!t.local, pago = !!t.pago;
+      if (afuera && local && pago) continue;
+      const cli = clients.find((c) => c.id === f.clientId);
+      const cc = !!cli?.cuentaCorriente;
+      out.push({ ts: f.ts, no: f.no, cliente: f.client || "—", cc, afuera, local, pago, total: f.total, days: Math.floor((now - (f.ts || now)) / 86400000) });
+    }
+    return out.sort((a, b) => b.days - a.days);
+  }, [invoiceHistory, opsTracking, clients]);
+
   const pnlView = useMemo(() => {
     const sales = invoiceHistory.filter((h) => h.type === "factura");
     let ventas = 0, costo = 0, piezas = 0;
@@ -1702,6 +1724,27 @@ export default function PriceDesk() {
         nota: "Aplicado directo (reversible borrando la entrada en la pestaña Cuentas).",
       };
     }
+    if (name === "pending_operations") {
+      return {
+        pendientes: pendingOps.map((o) => ({
+          factura: o.no, cliente: o.cliente, cuenta_corriente: o.cc, dias_desde_factura: o.days, total: o.total,
+          entrega_afuera: o.afuera, entrega_local: o.local, pago: o.pago,
+          falta: [!o.afuera && "entrega afuera", !o.local && "entrega local", !o.pago && "pago"].filter(Boolean),
+          bloqueado_por_falta_de_pago: !o.cc && !o.pago, // sin cuenta corriente = paga antes de entregar
+        })),
+      };
+    }
+    if (name === "set_operation_check") {
+      const no = String(args.invoiceNo || "").trim();
+      const rec = invoiceHistory.find((h) => String(h.no) === no && h.type === "factura");
+      if (!rec) return { ok: false, error: `No encontré la factura #${no}.`, facturas: invoiceHistory.filter((h) => h.type === "factura").slice(0, 12).map((h) => h.no) };
+      const map = { afuera: "afuera", "entrega afuera": "afuera", exterior: "afuera", local: "local", "entrega local": "local", pago: "pago", pagado: "pago", pagó: "pago" };
+      const key = map[String(args.check || "").toLowerCase()];
+      if (!key) return { ok: false, error: "check inválido. Usá: afuera | local | pago." };
+      const val = args.done == null ? true : !!args.done;
+      setOpsCheck(rec.ts, key, val);
+      return { ok: true, factura: rec.no, check: key, hecho: val };
+    }
     return { ok: false, error: "herramienta desconocida" };
   }
   // Confirmación universal de borrado del agente: pendingDelete = { titulo, detalle, run }.
@@ -1814,6 +1857,7 @@ export default function PriceDesk() {
       chatOpen={chatOpen} setChatOpen={setChatOpen} chatScrollRef={chatScrollRef}
       agentLog={agentLog} showSteps={showSteps} setShowSteps={setShowSteps} resetAgent={resetAgent} agentBusy={agentBusy}
       superOn={superOn} setSuperOn={setSuperOn} knowledgeCount={knowledgeBase.length}
+      pendingOps={pendingOps} setOpsCheck={setOpsCheck}
       chatText={chatText} setChatText={setChatText} chatImage={chatImage} setChatImage={setChatImage}
       onChatPaste={onChatPaste} submitChat={submitChat} busyChat={busyChat} />
   );

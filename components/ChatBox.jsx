@@ -6,15 +6,37 @@ export default function ChatBox({
   chatOpen, setChatOpen, chatScrollRef,
   agentLog, showSteps, setShowSteps, resetAgent, agentBusy,
   superOn, setSuperOn, knowledgeCount,
+  pendingOps = [], setOpsCheck,
   chatText, setChatText, chatImage, setChatImage, onChatPaste, submitChat, busyChat,
 }) {
   const s = styles;
+  const chk = (on) => ({ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 3, cursor: "pointer", color: on ? "#8ee0a8" : "#8b94a7" });
   return (
     <aside style={{ ...s.chatBox, transform: chatOpen ? "none" : "translateX(100%)" }}>
       <div style={s.chatHead}>
         <span>💬 ASISTENTE</span>
         <button onClick={() => setChatOpen(false)} title="Colapsar hacia la derecha" style={s.chatCollapse}>▶</button>
       </div>
+
+      {/* Pendientes de reclamar — proactivo (post-venta): entrega afuera / local / pago */}
+      {pendingOps.length > 0 && (
+        <div style={{ background: "#1a1410", border: "1px solid #5a4a1d", borderRadius: 8, padding: "8px 10px", marginBottom: 8, maxHeight: "26vh", overflowY: "auto" }}>
+          <div style={{ fontSize: 11.5, color: "#e6c98b", fontWeight: 600, marginBottom: 6 }}>🔔 Pendientes de reclamar ({pendingOps.length})</div>
+          {pendingOps.slice(0, 12).map((o) => {
+            const blocked = !o.cc && !o.pago;
+            return (
+              <div key={o.ts} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "3px 0", borderTop: "1px solid #2a2114", fontSize: 11 }}>
+                <span style={{ color: o.days >= 5 ? "#f0a0a0" : "#cfd6e4", fontWeight: 600, minWidth: 118 }}>
+                  #{o.no} · {o.cliente} · {o.days}d{blocked ? " · ⛔ paga 1º" : ""}
+                </span>
+                <label style={chk(o.afuera)}><input type="checkbox" checked={o.afuera} onChange={(e) => setOpsCheck(o.ts, "afuera", e.target.checked)} /> afuera</label>
+                <label style={chk(o.local)}><input type="checkbox" checked={o.local} onChange={(e) => setOpsCheck(o.ts, "local", e.target.checked)} /> local</label>
+                <label style={chk(o.pago)}><input type="checkbox" checked={o.pago} onChange={(e) => setOpsCheck(o.ts, "pago", e.target.checked)} /> pago</label>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* resultados: crecen y ocupan el alto disponible */}
       <div style={s.chatResults} ref={chatScrollRef}>
