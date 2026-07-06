@@ -21,6 +21,7 @@ export default function MesaView({
 }) {
   const s = styles;
   let lastCat = null;
+  const [modelOpen, setModelOpen] = React.useState({}); // colapso por modelo en la Mesa (abierto por defecto)
 
   const askSection = (
     <section style={s.section}>
@@ -187,27 +188,24 @@ export default function MesaView({
             </tr>
           </thead>
           <tbody>
-            {visibleCatalog.map(({ name, cat }) => {
-              const agg = aggBySku[name];
-              const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
-              const delta = spread ? agg.med - agg.min : 0;
-              const prevMinVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
-              const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
-              const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
-              const header =
-                cat !== lastCat ? ((lastCat = cat), (
-                  <tr key={"cat-" + cat}>
-                    <td colSpan={supplierList.length + 5} style={s.catRow}>{cat}</td>
-                  </tr>
-                )) : null;
-              return (
-                <React.Fragment key={name}>
-                  {header}
-                  <tr style={s.tr}>
+            {(() => {
+              const colSpanAll = supplierList.length + 5;
+              const modelKey = (n) => { const mm = n.match(/\d+\s*\+\s*\d+/); return mm ? n.slice(0, mm.index).trim() : n; };
+              const variantLabel = (n, key) => { const rest = n.slice(key.length).replace(/^[\s·–-]+/, "").trim(); return rest || n; };
+              // una fila completa de un SKU; label = lo que se ve en la columna SKU (spec, si es variante)
+              const renderRow = (name, label, indent) => {
+                const agg = aggBySku[name];
+                const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
+                const delta = spread ? agg.med - agg.min : 0;
+                const prevMinVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+                const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
+                const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
+                return (
+                  <tr key={name} style={s.tr}>
                     <td style={{ ...s.td, ...s.tdSku }}>
-                      <label style={s.skuLabel}>
+                      <label style={{ ...s.skuLabel, ...(indent ? { paddingLeft: 18 } : {}) }}>
                         <input type="checkbox" checked={!!selected[name]} onChange={() => toggleSelected(name)} style={s.chk} />
-                        <span>{name}</span>
+                        <span>{label}</span>
                       </label>
                     </td>
                     {supplierList.map((sp) => {
@@ -291,9 +289,37 @@ export default function MesaView({
                       {agg.client != null ? <>{money(agg.client)}{agg.bestIsOutlier && <span style={s.medTag}> ·med</span>}</> : <span style={s.dash}>—</span>}
                     </td>
                   </tr>
-                </React.Fragment>
-              );
-            })}
+                );
+              };
+              // agrupar: categoría (en orden) → modelo (nombre sin RAM+almacenamiento) → variantes
+              const cats = [];
+              let cc = null, cm = null;
+              for (const item of visibleCatalog) {
+                if (!cc || cc.cat !== item.cat) { cc = { cat: item.cat, models: [] }; cats.push(cc); cm = null; }
+                const key = modelKey(item.name);
+                if (!cm || cm.key !== key) { cm = { key, variants: [] }; cc.models.push(cm); }
+                cm.variants.push(item.name);
+              }
+              const out = [];
+              for (const c of cats) {
+                out.push(<tr key={"cat-" + c.cat}><td colSpan={colSpanAll} style={s.catRow}>{c.cat}</td></tr>);
+                for (const m of c.models) {
+                  // un solo spec → fila normal (nombre completo); varios → cabecera de modelo colapsable + specs indentadas
+                  if (m.variants.length === 1) { out.push(renderRow(m.variants[0], m.variants[0], false)); continue; }
+                  const gkey = c.cat + "|" + m.key;
+                  const open = modelOpen[gkey] !== false;
+                  out.push(
+                    <tr key={"mdl-" + gkey} onClick={() => setModelOpen((o) => ({ ...o, [gkey]: !open }))} style={{ cursor: "pointer", background: "#0f131c" }}>
+                      <td colSpan={colSpanAll} style={{ ...s.td, textAlign: "left", color: "#cfd6e4", fontWeight: 600 }}>
+                        {open ? "▾ " : "▸ "}{m.key}<span style={{ color: "#6b7385", fontWeight: 400, fontSize: 11 }}> · {m.variants.length} specs</span>
+                      </td>
+                    </tr>
+                  );
+                  if (open) for (const v of m.variants) out.push(renderRow(v, variantLabel(v, m.key), true));
+                }
+              }
+              return out;
+            })()}
           </tbody>
         </table>
       </div>
