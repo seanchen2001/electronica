@@ -97,19 +97,19 @@ export default function PriceDesk() {
   }, [extraCatalog, hiddenModels]);
   // departamentos disponibles: los fijos + los que existan en el catálogo (para que aparezca la pestaña)
   const deptList = useMemo(() => [...new Set([...DEPTS, ...catalog.map((c) => c.dept)])], [catalog]);
-  // proveedores del departamento activo: los que YA tienen algún precio cargado ahí (auto por uso).
-  // Si el depto todavía no tiene precios, mostramos todos para poder empezar a cargar.
-  const deptSuppliers = useMemo(() => {
-    const skus = catalog.filter((c) => c.dept === selectedDept).map((c) => c.name);
-    const serving = supplierList.filter((sp) => skus.some((sku) => typeof prices[sku]?.[sp] === "number"));
-    return serving.length ? serving : supplierList;
-  }, [catalog, selectedDept, supplierList, prices]);
   const catalogNames = useMemo(() => catalog.map((c) => c.name), [catalog]);
   const parseSystem = useMemo(() => buildParseSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const markSystem = useMemo(() => buildMarkSystem(catalog.map((c) => `${c.name}  [${c.cat}]`)), [catalog]);
   const [pendingNew, setPendingNew] = useState([]); // sugerencias de modelos nuevos a confirmar
   const [prices, setPrices] = useState(() => load(PRICES_KEY, {}));
   const [tiers, setTiers] = useState(() => load(TIERS_KEY, {})); // escalas por cantidad: tiers[sku][sup] = [{min,price}]
+  // proveedores del departamento activo: los que YA tienen algún precio cargado ahí (auto por uso).
+  // Si el depto todavía no tiene precios, mostramos todos para poder empezar a cargar. (después de `prices`, evita TDZ)
+  const deptSuppliers = useMemo(() => {
+    const skus = catalog.filter((c) => c.dept === selectedDept).map((c) => c.name);
+    const serving = supplierList.filter((sp) => skus.some((sku) => typeof prices[sku]?.[sp] === "number"));
+    return serving.length ? serving : supplierList;
+  }, [catalog, selectedDept, supplierList, prices]);
   const [priceHistory, setPriceHistory] = useState(() => load(PHIST_KEY, [])); // append-only: {sku,sup,price,ts} para analítica
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
