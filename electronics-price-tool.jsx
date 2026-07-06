@@ -1850,7 +1850,8 @@ export default function PriceDesk() {
         <button onClick={() => setView("clientes")} style={{ ...s.viewTab, ...(view === "clientes" ? s.viewTabOn : {}) }}>👤 Clientes</button>
         <button onClick={() => setView("cuentas")} style={{ ...s.viewTab, ...(view === "cuentas" ? s.viewTabOn : {}) }}>💰 Cuentas</button>
         <button onClick={() => setView("pnl")} style={{ ...s.viewTab, ...(view === "pnl" ? s.viewTabOn : {}) }}>📈 PnL</button>
-        <button onClick={() => setView("analitica")} style={{ ...s.viewTab, ...(view === "analitica" ? s.viewTabOn : {}) }}>🧮 Analítica</button>
+        {/* Analítica escondida por ahora */}
+        {false && <button onClick={() => setView("analitica")} style={{ ...s.viewTab, ...(view === "analitica" ? s.viewTabOn : {}) }}>🧮 Analítica</button>}
         <button onClick={() => setView("historial")} style={{ ...s.viewTab, ...(view === "historial" ? s.viewTabOn : {}) }}>📜 Historial {invoiceHistory.length > 0 ? `(${invoiceHistory.length})` : ""}</button>
         <button onClick={() => setTrashOpen(true)} style={{ ...s.viewTab, marginLeft: "auto" }} title="Lo borrado en las últimas 24 h — se puede restaurar">🗑️ Papelero{trash.length > 0 ? ` (${trash.length})` : ""}</button>
       </div>
