@@ -190,7 +190,9 @@ export default function MesaView({
           <tbody>
             {(() => {
               const colSpanAll = supplierList.length + 5;
-              const modelKey = (n) => { const mm = n.match(/\d+\s*\+\s*\d+/); return mm ? n.slice(0, mm.index).trim() : n; };
+              // token de RAM/almacenamiento en cualquier formato: 4+64, 12+256, 12/256GB, 12/1TB, 12+1T
+              const STORAGE = /\d+\s*[+/]\s*\d+\s*(?:GB|TB|T)?/i;
+              const modelKey = (n) => { const mm = n.match(STORAGE); return mm ? n.slice(0, mm.index).trim() : n; };
               const variantLabel = (n, key) => { const rest = n.slice(key.length).replace(/^[\s·–-]+/, "").trim(); return rest || n; };
               // una fila completa de un SKU; label = lo que se ve en la columna SKU (spec, si es variante)
               const renderRow = (name, label, indent) => {
