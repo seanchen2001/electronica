@@ -535,7 +535,9 @@ export default function PriceDesk() {
   function confirmNew(idx) {
     const m = pendingNew[idx];
     if (!m || !m.name.trim()) return;
-    setExtraCatalog((c) => (c.some((x) => x.name === m.name) || CATALOG.some((x) => x.name === m.name) ? c : [...c, { name: m.name.trim(), cat: CATEGORIES.includes(m.cat) ? m.cat : "Samsung" }]));
+    const dept = m.dept || (supplierDepts[m.supplier] || [])[0] || DEFAULT_DEPT;
+    const cat = m.cat ? m.cat : (dept === DEFAULT_DEPT ? "Samsung" : dept); // categoría libre fuera de Teléfonos
+    setExtraCatalog((c) => (c.some((x) => x.name === m.name) || CATALOG.some((x) => x.name === m.name) ? c : [...c, { name: m.name.trim(), cat, dept }]));
     if (m.price != null) {
       setPrices((prev) => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [m.supplier]: m.price } }));
       stampTimes([[m.name, m.supplier, false]]);
@@ -1931,7 +1933,7 @@ export default function PriceDesk() {
       <PriceLoadModal pending={pendingPriceLoad} onCancel={() => setPendingPriceLoad(null)} onConfirm={confirmPriceLoad} />
       <AgentCommitModal pending={pendingAgentCommit} onCancel={() => setPendingAgentCommit(null)} onConfirm={confirmAgentCommit} />
       <DeleteModal pending={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />
-      <NewModelsModal pendingNew={pendingNew} editNew={editNew} confirmNew={confirmNew} dismissNew={dismissNew} onClose={() => setPendingNew([])} />
+      <NewModelsModal pendingNew={pendingNew} editNew={editNew} confirmNew={confirmNew} dismissNew={dismissNew} onClose={() => setPendingNew([])} deptList={deptList} supplierDepts={supplierDepts} />
 
       {/* Papelero: panel + toast "Borrado X · Deshacer" */}
       {trashOpen && <TrashPanel trash={trash} trashLabel={trashLabel} restoreTrash={restoreTrash} onClose={() => setTrashOpen(false)} />}
