@@ -3,8 +3,14 @@ import styles from "../styles.js";
 import { money, nextInvoiceNo } from "../lib/helpers.js";
 
 // Pestaña Historial: facturas / remitos generados, con re-descarga, edición y borrado.
-export default function HistorialView({ invoiceHistory, setInvoiceHistory, loadInvoiceForEdit, downloadFromHistory, deleteInvoice, pdfBusy }) {
+export default function HistorialView({ invoiceHistory, setInvoiceHistory, loadInvoiceForEdit, downloadFromHistory, deleteInvoice, pdfBusy, openImeiEditor }) {
   const s = styles;
+  const imeiProg = (h) => {
+    const items = h.items || h.order?.items || [];
+    const total = items.reduce((a, it) => a + (Number(it.qty) || 0), 0);
+    const loaded = items.reduce((a, it) => a + (Array.isArray(it.imeis) ? it.imeis.filter((x) => String(x).trim()).length : (it.imei ? 1 : 0)), 0);
+    return { loaded, total };
+  };
   return (
     <section style={s.section}>
       <div style={s.sectionTitle}>HISTORIAL — facturas / remitos generados · próximo Invoice # {nextInvoiceNo(invoiceHistory)}</div>
@@ -43,6 +49,9 @@ export default function HistorialView({ invoiceHistory, setInvoiceHistory, loadI
                   <td style={{ ...s.invTd, color: (h.margin || 0) >= 0 ? "#4ade80" : "#f87171" }}>{h.margin != null ? money(h.margin) : "—"}</td>
                   <td style={{ ...s.invTd, textAlign: "left", whiteSpace: "nowrap" }}>
                     <button onClick={() => loadInvoiceForEdit(h)} style={{ ...s.miniBtn, borderColor: "#3a5", color: "#8ee0a8" }} title="Editar esta factura (items, colores, cantidades, cliente, envío)">✏️ Editar</button>{" "}
+                    {h.type === "factura" && openImeiEditor && (() => { const p = imeiProg(h); const done = p.total > 0 && p.loaded >= p.total; return (
+                      <><button onClick={() => openImeiEditor(h)} style={{ ...s.miniBtn, borderColor: done ? "#3a5" : "#5a4a1d", color: done ? "#8ee0a8" : "#e0b34d" }} title="Cargar los IMEIs por unidad (agrupados por modelo)">📱 IMEIs {p.loaded}/{p.total}</button>{" "}</>
+                    ); })()}
                     <button onClick={() => downloadFromHistory(h, "factura")} disabled={pdfBusy} style={s.miniBtn} title="Factura (con precios)">Factura</button>{" "}
                     <button onClick={() => downloadFromHistory(h, "remitos")} disabled={pdfBusy} style={s.miniBtn} title="Remitos por proveedor (sin precios)">Rem. x prov.</button>
                   </td>

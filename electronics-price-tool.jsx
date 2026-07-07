@@ -179,6 +179,7 @@ export default function PriceDesk() {
   const [showSteps, setShowSteps] = useState(false); // ver el proceso (herramientas) del agente
   const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
   const [pendingDelete, setPendingDelete] = useState(null); // {ts, no, cliente, total} para confirmar borrado de factura vía agente
+  const [imeiEditor, setImeiEditor] = useState(null); // { ts, no, cliente, lines:[{sku,color,qty,text}] } para cargar IMEIs por unidad
   const [pendingPriceLoad, setPendingPriceLoad] = useState(null); // {supplier, rows, newModels} para confirmar carga de precios
   const lastQuoteRef = useRef({ text: "", images: [] }); // último mensaje (para load_prices)
   const agentContents = useRef([]); // conversación multi-turno del agente
@@ -980,6 +981,19 @@ export default function PriceDesk() {
     setOrderShipId(rec.shipId || "");
     setDocType(rec.type === "remito" ? "remito" : "factura");
     setEditingTs(rec.ts); // abre el editor como modal flotante sobre el Historial (no cambia de pestaña)
+  }
+  // ---- IMEIs por unidad (se cargan post-factura, agrupados por modelo/línea) ----
+  const lineImeis = (it) => (Array.isArray(it.imeis) ? it.imeis.filter((x) => String(x).trim()) : (it.imei ? [it.imei] : []));
+  function openImeiEditor(rec) {
+    const items = rec.items || rec.order?.items || [];
+    setImeiEditor({ ts: rec.ts, no: rec.no, cliente: rec.client || "—", lines: items.map((it) => ({ sku: it.sku, color: it.color || "", qty: Number(it.qty) || 0, text: lineImeis(it).join("\n") })) });
+  }
+  function saveImeis() {
+    const ed = imeiEditor; if (!ed) return;
+    const perLine = ed.lines.map((l) => l.text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+    const apply = (items) => (items || []).map((it, i) => ({ ...it, imeis: perLine[i] || [] }));
+    setInvoiceHistory((h) => h.map((rec) => (rec.ts !== ed.ts ? rec : { ...rec, items: apply(rec.items), order: rec.order ? { ...rec.order, items: apply(rec.order.items) } : rec.order })));
+    setImeiEditor(null);
   }
   // Volver a una orden nueva (limpia el modo edición).
   function resetOrder() {
@@ -2136,7 +2150,7 @@ export default function PriceDesk() {
       {view === "analitica" && <AnaliticaView data={analytics} inventory={inventory} lista={lista} />}
 
       {view === "historial" && (
-        <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory}
+        <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory} openImeiEditor={openImeiEditor}
           loadInvoiceForEdit={loadInvoiceForEdit} downloadFromHistory={downloadFromHistory}
           deleteInvoice={deleteInvoice} pdfBusy={pdfBusy} />
       )}
@@ -2151,6 +2165,36 @@ export default function PriceDesk() {
       <PriceLoadModal pending={pendingPriceLoad} onCancel={() => setPendingPriceLoad(null)} onConfirm={confirmPriceLoad} />
       <AgentCommitModal pending={pendingAgentCommit} onCancel={() => setPendingAgentCommit(null)} onConfirm={confirmAgentCommit} />
       <DeleteModal pending={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />
+
+      {/* Modal: cargar IMEIs por unidad (agrupados por modelo/línea), post-factura */}
+      {imeiEditor && (
+        <div style={s.modalOverlay} onClick={() => setImeiEditor(null)}>
+          <div style={{ ...s.modalCard, width: "min(560px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div style={s.newHead}>📱 IMEIs — factura #{imeiEditor.no} ({imeiEditor.cliente}) · uno por línea, uno por unidad</div>
+            {imeiEditor.lines.map((l, i) => {
+              const count = l.text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).length;
+              const ok = l.qty ? count >= l.qty : count > 0;
+              return (
+                <div key={i} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: "#cfd6e4", marginBottom: 3 }}>
+                    {l.sku}{l.color ? <span style={{ color: "#8b94a7" }}> · {l.color}</span> : null}
+                    <span style={{ marginLeft: 8, color: ok ? "#8ee0a8" : (count ? "#e0b34d" : "#8b94a7"), fontWeight: 600 }}>{count}/{l.qty}</span>
+                    {count > l.qty && <span style={{ marginLeft: 6, color: "#f0a0a0", fontSize: 11 }}>⚠ sobran {count - l.qty}</span>}
+                  </div>
+                  <textarea value={l.text}
+                    onChange={(e) => setImeiEditor((ed) => ({ ...ed, lines: ed.lines.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)) }))}
+                    rows={Math.min(Math.max(l.qty, 2) + 1, 8)} placeholder={`Pegá ${l.qty} IMEIs, uno por línea…`}
+                    style={{ ...s.invArea, width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 11.5 }} />
+                </div>
+              );
+            })}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+              <button onClick={() => setImeiEditor(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
+              <button onClick={saveImeis} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>💾 Guardar IMEIs</button>
+            </div>
+          </div>
+        </div>
+      )}
       <NewModelsModal pendingNew={pendingNew} editNew={editNew} confirmNew={confirmNew} dismissNew={dismissNew} onClose={() => setPendingNew([])} deptList={deptList} supplierDepts={supplierDepts} />
 
       {/* Papelero: panel + toast "Borrado X · Deshacer" */}
