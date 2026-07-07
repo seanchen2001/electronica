@@ -1589,7 +1589,14 @@ export default function PriceDesk() {
       const drop = (obj) => { if (!(sku in obj)) return obj; const n = { ...obj }; delete n[sku]; return n; };
       setPrices(drop); setTiers(drop); setTimes(drop); setLista(drop);
     };
-    if (name === "list_models") { const ms = args.dept ? catalog.filter((c) => c.dept === args.dept) : catalog; return { departamentos: deptList, modelos: ms.map((c) => ({ nombre: c.name, categoria: c.cat, departamento: c.dept })) }; }
+    if (name === "list_models") {
+      const ms = args.dept ? catalog.filter((c) => c.dept === args.dept) : catalog;
+      return {
+        departamentos: deptList,
+        modelos: ms.map((c) => ({ nombre: c.name, categoria: c.cat, departamento: c.dept, precios: prices[c.name] || {}, sin_precio: !prices[c.name] || !Object.keys(prices[c.name]).length })),
+        nota: "Usá 'precios' (proveedor→precio) y 'sin_precio' para detectar duplicados (mismo teléfono, distinto nombre) y modelos que sobran (sin precio). Para juntar duplicados usá merge_models; para sacar los que sobran, delete_model.",
+      };
+    }
     if (name === "add_model") {
       const nm = String(args.name || "").trim();
       if (!nm) return { ok: false, error: "Falta el nombre del modelo." };
