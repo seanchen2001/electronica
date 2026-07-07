@@ -26,7 +26,7 @@ import OrdenesView from "./components/OrdenesView.jsx";
 import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
-  TRASH_KEY, TRASH_TTL_MS, PRICE_AUTO_THRESHOLD,
+  TRASH_KEY, TRASH_TTL_MS, PRICE_AUTO_THRESHOLD, ARB_GAP_PCT,
   DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, DEPTS, DEFAULT_DEPT, COMPANY, supplierCode, MONTHS_ES,
 } from "./lib/constants.js";
 import {
@@ -51,6 +51,7 @@ import {
 import { computeAccounts, canonName } from "./lib/accounts.js";
 import { analyticsData, analyticsSummary } from "./lib/analytics.js";
 import { computeInventory } from "./lib/inventory.js";
+import { arbitrageScan } from "./lib/arbitrage.js";
 import AnaliticaView from "./components/AnaliticaView.jsx";
 import TrashPanel from "./components/TrashPanel.jsx";
 
@@ -1049,6 +1050,9 @@ export default function PriceDesk() {
   // Inventario derivado: compras a cuentas nuestras = stock in, ventas = stock out
   const inventory = useMemo(() => computeInventory({ invoiceHistory, clients }), [invoiceHistory, clients]);
 
+  // Arbitrajes: proveedor muy por debajo de la mediana (solo aviso; distingue precio viejo)
+  const arbAlerts = useMemo(() => arbitrageScan({ prices, times, catalog }, { gapPct: ARB_GAP_PCT }), [prices, times, catalog]);
+
   // Operaciones post-venta: por cada factura, 3 checks (entrega afuera / local / pago).
   // pendingOps = las que tienen algo sin cerrar, ordenadas por más atrasado (para reclamar).
   function setOpsCheck(ts, key, val) { setOpsTracking((o) => ({ ...o, [ts]: { ...(o[ts] || {}), [key]: val } })); }
@@ -1697,6 +1701,13 @@ export default function PriceDesk() {
     if (name === "analytics_summary") {
       return analyticsSummary({ invoiceHistory, ledger }, args.period || "mes");
     }
+    if (name === "arbitrage_scan") {
+      const alerts = arbitrageScan({ prices, times, catalog }, { gapPct: Number(args.gapPct) || ARB_GAP_PCT });
+      return {
+        arbitrajes: alerts.map((a) => ({ sku: a.sku, proveedor_bajo: a.lowSupplier, precio_bajo: a.lowPrice, mediana: a.median, gap_pct: a.gapPct, desactualizado: a.stale, nota: a.nota })),
+        nota: alerts.length ? "SOLO AVISO: si 'desactualizado' es true, el precio bajo probablemente sea viejo — verificar con el proveedor antes de comprar. Si es false, el gap parece real." : "No hay gaps relevantes vs. la mediana ahora.",
+      };
+    }
     if (name === "inventory_status") {
       const rows = Object.values(inventory);
       if (!rows.length) return { ok: true, inventario: [], nota: "Sin movimientos de inventario. Marcá la cuenta de compras propias con esNuestra para trackear entradas." };
@@ -1961,6 +1972,7 @@ export default function PriceDesk() {
           loadSeed={loadSeed} prices={prices} tiers={tiers}
           parseSupplier={parseSupplier} setParseSupplier={setParseSupplier} supplierList={supplierList}
           rawText={rawText} setRawText={setRawText} runParse={runParse} parsing={parsing} parseMsg={parseMsg}
+          arbAlerts={arbAlerts}
           hideEmpty={hideEmpty} setHideEmpty={setHideEmpty} catalog={catalog} visibleCatalog={visibleCatalog}
           deptList={deptList} selectedDept={selectedDept} setSelectedDept={setSelectedDept} deptSuppliers={deptSuppliers}
           selectAll={selectAll} selectPriced={selectPriced} selectNone={selectNone}

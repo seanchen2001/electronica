@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import styles from "../styles.js";
 import { money } from "../lib/helpers.js";
 
@@ -12,6 +12,8 @@ export default function MesaView({
   saveSnapshot, expireAll, snapshots, prevSnap, loadSeed, prices, tiers,
   // paste & parse (móvil)
   parseSupplier, setParseSupplier, supplierList, rawText, setRawText, runParse, parsing, parseMsg,
+  // arbitrajes (solo aviso)
+  arbAlerts = [],
   // tabla
   hideEmpty, setHideEmpty, catalog, visibleCatalog, deptList, selectedDept, setSelectedDept, deptSuppliers, selectAll, selectPriced, selectNone,
   selectedSkus, selected, toggleSelected, setSelected,
@@ -21,6 +23,32 @@ export default function MesaView({
 }) {
   const s = styles;
   let lastCat = null;
+  const [arbOpen, setArbOpen] = useState(false);
+
+  // Banner de arbitrajes: proveedor muy por debajo de la mediana (solo aviso).
+  const arbBanner = arbAlerts.length > 0 && (
+    <div style={{ background: "#161a12", border: "1px solid #3f4d1f", borderRadius: 6, padding: "8px 12px", marginBottom: 10 }}>
+      <div onClick={() => setArbOpen((v) => !v)} style={{ cursor: "pointer", fontSize: 12.5, color: "#d8e4a0", display: "flex", alignItems: "center", gap: 8 }}>
+        <span>⚡ {arbAlerts.length} posible(s) arbitraje(s) — proveedor muy por debajo de la mediana</span>
+        <span style={{ color: "#8b94a7", fontSize: 11 }}>{arbOpen ? "▲ cerrar" : "▼ ver"}</span>
+      </div>
+      {arbOpen && (
+        <table style={{ ...s.invTable, marginTop: 8 }}>
+          <tbody>
+            {arbAlerts.slice(0, 10).map((a) => (
+              <tr key={a.sku}>
+                <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{a.sku}</td>
+                <td style={{ ...s.invTd, color: "#4ade80" }}>{a.lowSupplier} {money(a.lowPrice)}</td>
+                <td style={{ ...s.invTd, color: "#9aa4b2" }}>mediana {money(a.median)}</td>
+                <td style={{ ...s.invTd, color: "#fbbf24" }}>gap {a.gapPct}%</td>
+                <td style={{ ...s.invTd, textAlign: "left", color: a.stale ? "#e0b34d" : "#8ee0a8", fontSize: 11 }}>{a.stale ? "⚠ " : "✓ "}{a.nota}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
 
   const askSection = (
     <section style={s.section}>
@@ -134,6 +162,7 @@ export default function MesaView({
       {catalog.filter((c) => c.dept === selectedDept).length === 0 && (
         <div style={s.askHint}>No hay productos en “{selectedDept}” todavía. Agregalos desde el asistente (ej. “agregá el iPhone 16 128GB en el departamento iPhone”).</div>
       )}
+      {arbBanner}
       <div style={s.tableBar}>
         <label style={s.hideToggle}>
           <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} style={s.chk} />
