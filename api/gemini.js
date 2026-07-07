@@ -45,10 +45,11 @@ export default async function handler(req, res) {
     convo = [{ role: "user", parts }];
   }
 
-  const gBody = {
-    contents: convo,
-    generationConfig: { temperature: 0, maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
-  };
+  // thinkingBudget: 0 solo sirve para Flash (rápido, sin pensar). Los modelos Pro/2.5-pro
+  // EXIGEN thinking mode → si les mandás budget 0 tiran 400. Para esos, no lo mandamos.
+  const gc = { temperature: 0, maxOutputTokens: maxTokens };
+  if (/flash/i.test(model)) gc.thinkingConfig = { thinkingBudget: 0 };
+  const gBody = { contents: convo, generationConfig: gc };
   if (system) gBody.system_instruction = { parts: [{ text: system }] };
   if (json) gBody.generationConfig.responseMimeType = "application/json";
   if (tools) gBody.tools = tools;
