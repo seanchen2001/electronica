@@ -41,7 +41,7 @@ import {
   negotiationReport as negotiationReportPure,
 } from "./lib/pricing.js";
 import {
-  callGemini, callGeminiTools, parseSupplierQuote, matchModels, SUPERVISOR_MODEL,
+  callGemini, callGeminiTools, parseSupplierQuote, matchModels, SUPERVISOR_MODEL, GEMINI_MODEL,
   buildParseSystem, buildMarkSystem, DESK_SYSTEM, stripFences,
   classifyIntent as classifyIntentAI,
   resolveSku as resolveSkuPure,
@@ -83,6 +83,7 @@ export default function PriceDesk() {
   const [opsTracking, setOpsTracking] = useState(() => load("desk-ops-v1", {})); // seguimiento post-venta por factura(ts): { afuera, local, pago, cargamosNosotros }
   const [chatLog, setChatLog] = useState(() => load(CHAT_LOG_KEY, [])); // conversaciones del agente (sustrato de auto-mejora): [{ts, userText, actions, finalText}]
   const [superOn, setSuperOn] = useState(() => load("desk-supervisor-on", true)); // supervisor (Gemini Pro) activado
+  const [smartWorker, setSmartWorker] = useState(() => load("desk-smart-worker", true)); // worker en Gemini Pro (más inteligente, mira antes de preguntar)
   const [newSupplier, setNewSupplier] = useState("");
   // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
   // agregado después. Si no, los modelos nuevos quedan en una sección aparte al final.
@@ -231,6 +232,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem("desk-ops-v1", JSON.stringify(opsTracking)); } catch {} }, [opsTracking]);
   useEffect(() => { try { localStorage.setItem(CHAT_LOG_KEY, JSON.stringify(chatLog)); } catch {} }, [chatLog]);
   useEffect(() => { try { localStorage.setItem("desk-supervisor-on", JSON.stringify(superOn)); } catch {} }, [superOn]);
+  useEffect(() => { try { localStorage.setItem("desk-smart-worker", JSON.stringify(smartWorker)); } catch {} }, [smartWorker]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
   useEffect(() => { try { localStorage.setItem(PHIST_KEY, JSON.stringify(priceHistory)); } catch {} }, [priceHistory]);
@@ -2064,7 +2066,7 @@ export default function PriceDesk() {
     let finalText = ""; // respuesta final del turno (para el registro de conversaciones)
     try {
       for (let step = 0; step < 8; step++) {
-        const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048 });
+        const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048, model: smartWorker ? SUPERVISOR_MODEL : GEMINI_MODEL });
         contents.push(cand);
         const calls = (cand.parts || []).filter((p) => p.functionCall).map((p) => p.functionCall);
         const textOut = (cand.parts || []).filter((p) => p.text).map((p) => p.text).join("").trim();
@@ -2158,6 +2160,7 @@ export default function PriceDesk() {
       chatOpen={chatOpen} setChatOpen={setChatOpen} chatScrollRef={chatScrollRef}
       agentLog={agentLog} showSteps={showSteps} setShowSteps={setShowSteps} resetAgent={resetAgent} agentBusy={agentBusy}
       superOn={superOn} setSuperOn={setSuperOn} knowledgeCount={knowledgeBase.length}
+      smartWorker={smartWorker} setSmartWorker={setSmartWorker}
       runImprovementReview={runImprovementReview} chatLogCount={chatLog.length}
       pendingOps={pendingOps} setOpsCheck={setOpsCheck}
       chatText={chatText} setChatText={setChatText} chatImage={chatImage} setChatImage={setChatImage}

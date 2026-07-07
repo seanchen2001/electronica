@@ -46,6 +46,7 @@ export default function ChatBox({
   chatOpen, setChatOpen, chatScrollRef,
   agentLog, showSteps, setShowSteps, resetAgent, agentBusy,
   superOn, setSuperOn, knowledgeCount,
+  smartWorker, setSmartWorker,
   runImprovementReview, chatLogCount = 0,
   pendingOps = [], setOpsCheck,
   chatText, setChatText, chatImage, setChatImage, onChatPaste, submitChat, busyChat,
@@ -93,6 +94,12 @@ export default function ChatBox({
                     title="Supervisor (Gemini Pro): revisa, corrige lo de bajo riesgo y aprende reglas del sistema">
                     <input type="checkbox" checked={!!superOn} onChange={(e) => setSuperOn(e.target.checked)} /> 🧭 supervisor{knowledgeCount ? ` (${knowledgeCount})` : ""}
                   </label>
+                  {setSmartWorker && (
+                    <label style={{ fontSize: 10.5, color: smartWorker ? "#8ee0a8" : "#6b7385", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+                      title="Modo inteligente: el agente corre en Gemini Pro (mira y razona antes de preguntar). Apagado = Flash, más rápido y barato pero menos vivo.">
+                      <input type="checkbox" checked={!!smartWorker} onChange={(e) => setSmartWorker(e.target.checked)} /> 🧠 inteligente
+                    </label>
+                  )}
                 </span>
                 <span style={{ display: "inline-flex", gap: 6 }}>
                   {runImprovementReview && (
