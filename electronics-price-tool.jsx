@@ -26,7 +26,7 @@ import OrdenesView from "./components/OrdenesView.jsx";
 import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
-  TRASH_KEY, TRASH_TTL_MS,
+  TRASH_KEY, TRASH_TTL_MS, PRICE_AUTO_THRESHOLD,
   DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, DEPTS, DEFAULT_DEPT, COMPANY, supplierCode, MONTHS_ES,
 } from "./lib/constants.js";
 import {
@@ -1437,11 +1437,20 @@ export default function PriceDesk() {
         const oldP = prices[sku]?.[supplier];
         const newP = matched[sku];
         const pct = typeof oldP === "number" && oldP ? Math.round(((newP - oldP) / oldP) * 1000) / 10 : null;
-        return { sku, oldPrice: oldP ?? null, newPrice: newP, pct, tiers: pt[sku] || null, big: pct != null && Math.abs(pct) > 15 };
+        return { sku, oldPrice: oldP ?? null, newPrice: newP, pct, tiers: pt[sku] || null, big: pct != null && Math.abs(pct) > PRICE_AUTO_THRESHOLD };
       });
       if (!rows.length && !newModels.length) return { ok: false, error: "No pude extraer precios de la cotización." };
+      // T0 condicional: deltas dentro del umbral y sin modelos nuevos → aplica directo.
+      if (rows.length && !newModels.length && rows.every((r) => !r.big)) {
+        applyPriceLoad({ supplier, rows, newModels: [] });
+        return {
+          ok: true, aplicado: true, supplier, cargados: rows.length,
+          precios: rows.map((r) => ({ sku: r.sku, precio: r.newPrice, delta_pct: r.pct })),
+          nota: `Variaciones dentro del ±${PRICE_AUTO_THRESHOLD}% y sin modelos nuevos: apliqué directo, sin modal.`,
+        };
+      }
       setPendingPriceLoad({ supplier, rows, newModels });
-      return { status: "needs_confirmation", supplier, cargados: rows.length, con_variacion_grande: rows.filter((r) => r.big).map((r) => `${r.sku} (${r.pct}%)`), nuevos: newModels.map((m) => m.name), mensaje: "Le mostré la previsualización al usuario para que confirme antes de guardar." };
+      return { status: "needs_confirmation", supplier, cargados: rows.length, con_variacion_grande: rows.filter((r) => r.big).map((r) => `${r.sku} (${r.pct}%)`), nuevos: newModels.map((m) => m.name), mensaje: "Hay variación grande o modelos nuevos: le mostré la previsualización al usuario para que confirme antes de guardar." };
     }
     if (name === "add_client") {
       const nm = String(args.name || "").trim();
@@ -1714,14 +1723,23 @@ export default function PriceDesk() {
         type, amount: amt, concept: String(args.concept || "").trim() || (type === "pago" ? "Pago" : type === "gasto" ? "Gasto envío proveedor" : "Cargo"),
         date: args.date || today(), ref: "",
       };
-      setLedger((lg) => [entry, ...lg]);
+      // T1 — confirmación simple: es plata; el usuario confirma con un click antes de aplicar
       const accs = computeAccounts({ invoiceHistory, ledger: [entry, ...ledger], aliases }, side);
-      const saldo = accs[party]?.saldo;
-      setAgentLog((l) => [...l, { role: "system", text: `💰 Registré ${type} de ${money(amt)} en la cuenta de ${party}.` }]);
+      const saldoEstimado = accs[party]?.saldo;
+      setPendingDelete({
+        titulo: `Registrar ${type} de ${money(amt)}`,
+        detalle: `${party} (${side === "client" ? "cliente" : "proveedor"}) · ${entry.concept} · ${entry.date}${saldoEstimado != null ? ` · saldo quedaría en ${money(+saldoEstimado.toFixed(2))}` : ""}`,
+        icon: "💰", confirmLabel: "✓ Registrar", confirmColor: "#15803d",
+        run: () => {
+          setLedger((lg) => [entry, ...lg]);
+          setAgentLog((l) => [...l, { role: "system", text: `💰 Registré ${type} de ${money(amt)} en la cuenta de ${party}.` }]);
+        },
+      });
       return {
-        ok: true, movimiento: { party, side, type, amount: amt, concept: entry.concept, date: entry.date },
-        nuevo_saldo: saldo != null ? +saldo.toFixed(2) : null,
-        nota: "Aplicado directo (reversible borrando la entrada en la pestaña Cuentas).",
+        status: "needs_confirmation",
+        movimiento: { party, side, type, amount: amt, concept: entry.concept, date: entry.date },
+        nuevo_saldo_estimado: saldoEstimado != null ? +saldoEstimado.toFixed(2) : null,
+        mensaje: "Le pedí al usuario una confirmación simple para registrar el movimiento (reversible desde Cuentas).",
       };
     }
     if (name === "pending_operations") {
@@ -1831,9 +1849,9 @@ export default function PriceDesk() {
       else if (c.kind === "remitos") { await downloadSupplierRemitos(); setAgentLog((l) => [...l, { role: "system", text: "✅ Remitos por proveedor generados." }]); }
     } catch (e) { setAgentLog((l) => [...l, { role: "system", text: "Error al generar: " + (e?.message || e) }]); }
   }
-  function confirmPriceLoad() {
-    const p = pendingPriceLoad; setPendingPriceLoad(null);
-    if (!p) return;
+  // Aplica una carga de precios (rows del preview) — la usan el modal Y el camino
+  // automático T0 de load_prices (deltas chicos, sin modelos nuevos).
+  function applyPriceLoad(p) {
     setPrices((prev) => { const next = { ...prev }; for (const r of p.rows) next[r.sku] = { ...(next[r.sku] || {}), [p.supplier]: r.newPrice }; return next; });
     setTiers((prev) => {
       const next = { ...prev };
@@ -1844,6 +1862,10 @@ export default function PriceDesk() {
     logPrices(p.rows.map((r) => ({ sku: r.sku, supplier: p.supplier, price: r.newPrice })));
     if (p.newModels?.length) setPendingNew((pn) => [...pn, ...p.newModels.filter((m) => !pn.some((x) => x.name === m.name)).map((m) => ({ ...m, supplier: p.supplier }))]);
     setAgentLog((l) => [...l, { role: "system", text: `✅ Cargué ${p.rows.length} precio(s) para ${p.supplier}${p.newModels?.length ? ` · ${p.newModels.length} modelo(s) nuevo(s) → confirmá en el modal` : ""}.` }]);
+  }
+  function confirmPriceLoad() {
+    const p = pendingPriceLoad; setPendingPriceLoad(null);
+    if (p) applyPriceLoad(p);
   }
   function resetAgent() { agentContents.current = []; setAgentLog([]); setPendingAgentCommit(null); setPendingPriceLoad(null); }
 
