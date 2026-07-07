@@ -1258,12 +1258,18 @@ export default function PriceDesk() {
       if (!l.cantidad) issues.push(`${l.modelo}: cantidad 0.`);
       if (l.precio && l.costo && l.precio < l.costo) issues.push(`${l.modelo}: precio por debajo del costo.`);
     }
-    // stock: no sobrevender (solo si el destino no es una cuenta nuestra y el SKU tiene inventario trackeado)
+    // factura# duplicada (salvo que estemos editando esa misma factura)
+    if (order.invoiceNo && invoiceHistory.some((h) => h.type === "factura" && String(h.no) === String(order.invoiceNo) && h.ts !== editingTs)) {
+      issues.push(`La factura #${order.invoiceNo} ya existe en el Historial.`);
+    }
+    // stock y costo promedio REAL (solo si el destino no es una cuenta nuestra)
     const cliRev = clients.find((c) => c.id === orderClientId);
     if (!cliRev?.esNuestra) {
       for (const l of summary.lineas) {
         const inv = inventory[l.modelo];
-        if (inv && inv.entradas > 0 && l.cantidad > inv.onHand) issues.push(`${l.modelo}: vendés ${l.cantidad} pero hay ${inv.onHand} en stock (costo prom. $${inv.avgCost}).`);
+        if (!inv) continue;
+        if (inv.entradas > 0 && l.cantidad > inv.onHand) issues.push(`${l.modelo}: vendés ${l.cantidad} pero hay ${inv.onHand} en stock (costo prom. $${inv.avgCost}).`);
+        if (inv.avgCost != null && l.precio && l.precio < inv.avgCost) issues.push(`${l.modelo}: precio $${l.precio} por debajo del costo promedio real pagado ($${inv.avgCost}).`);
       }
     }
     try {
