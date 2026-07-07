@@ -1898,6 +1898,24 @@ export default function PriceDesk() {
       setOpsCheck(rec.ts, key, val);
       return { ok: true, factura: rec.no, check: key, hecho: val };
     }
+    if (name === "render_table") {
+      const art = {
+        kind: "table", title: String(args.title || ""),
+        columns: Array.isArray(args.columns) ? args.columns.map((c) => String(c)) : [],
+        rows: Array.isArray(args.rows) ? args.rows.map((r) => (Array.isArray(r) ? r.map((c) => (c == null ? "" : String(c))) : [String(r)])) : [],
+      };
+      setAgentLog((l) => [...l, { role: "artifact", artifact: art }]);
+      return { ok: true, rendered: "table", filas: art.rows.length, nota: "Ya se dibujó la tabla en el chat. NO la repitas en texto." };
+    }
+    if (name === "render_chart") {
+      const art = {
+        kind: "chart", title: String(args.title || ""), type: args.type === "line" ? "line" : "bar",
+        labels: Array.isArray(args.labels) ? args.labels.map((x) => String(x)) : [],
+        series: (Array.isArray(args.series) ? args.series : []).map((s) => ({ name: String(s?.name || ""), values: (Array.isArray(s?.values) ? s.values : []).map((v) => Number(v) || 0) })),
+      };
+      setAgentLog((l) => [...l, { role: "artifact", artifact: art }]);
+      return { ok: true, rendered: "chart", nota: "Ya se dibujó el gráfico en el chat. NO lo describas en texto largo." };
+    }
     return { ok: false, error: "herramienta desconocida" };
   }
   // Confirmación universal de borrado del agente: pendingDelete = { titulo, detalle, run }.

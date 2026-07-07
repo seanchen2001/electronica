@@ -1,6 +1,46 @@
 import React from "react";
 import styles from "../styles.js";
 
+// Interfaz generativa: el agente puede dibujar tablas y gráficos en el chat.
+function Artifact({ a }) {
+  if (!a) return null;
+  const card = { background: "#0d1119", border: "1px solid #2a3346", borderRadius: 8, padding: 10, margin: "6px 0", overflowX: "auto" };
+  const title = { fontSize: 12, color: "#8ea0bf", fontWeight: 600, marginBottom: 6 };
+  if (a.kind === "table") {
+    return (
+      <div style={card}>
+        {a.title && <div style={title}>{a.title}</div>}
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+          <thead><tr>{(a.columns || []).map((c, i) => <th key={i} style={{ textAlign: "left", padding: "3px 6px", borderBottom: "1px solid #2a3346", color: "#8b94a7", whiteSpace: "nowrap" }}>{c}</th>)}</tr></thead>
+          <tbody>{(a.rows || []).map((r, ri) => <tr key={ri}>{(r || []).map((cell, ci) => <td key={ci} style={{ padding: "3px 6px", borderBottom: "1px solid #171c28", color: "#cfd6e4", whiteSpace: "nowrap" }}>{cell}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+    );
+  }
+  if (a.kind === "chart") {
+    const vals = (a.series && a.series[0] && a.series[0].values) || [];
+    const max = Math.max(1, ...vals.map((v) => Math.abs(v)));
+    return (
+      <div style={card}>
+        {a.title && <div style={title}>{a.title}</div>}
+        {(a.labels || []).map((lab, i) => {
+          const v = vals[i] || 0;
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, margin: "2px 0", fontSize: 11 }}>
+              <span style={{ width: 96, color: "#9aa4b2", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={lab}>{lab}</span>
+              <div style={{ flex: 1, background: "#11151f", borderRadius: 3, height: 14 }}>
+                <div style={{ width: (Math.abs(v) / max * 100) + "%", background: v < 0 ? "#f0a0a0" : "#6fa8e6", height: "100%", borderRadius: 3 }} />
+              </div>
+              <span style={{ width: 62, textAlign: "right", color: "#cfd6e4", fontVariantNumeric: "tabular-nums" }}>{v.toLocaleString("en-US")}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  return null;
+}
+
 // Chatbox unificado de escritorio (a la derecha, colapsable): el log del agente + input.
 export default function ChatBox({
   chatOpen, setChatOpen, chatScrollRef,
@@ -65,9 +105,11 @@ export default function ChatBox({
               </div>
             )}
             {agentLog.filter((m) => showSteps || m.role !== "tool").map((m, i) => (
-              <div key={i} style={
-                m.role === "you" ? s.agYou : m.role === "agent" ? s.agBot : m.role === "tool" ? s.agTool : s.agSys
-              }>{m.text}</div>
+              m.role === "artifact"
+                ? <Artifact key={i} a={m.artifact} />
+                : <div key={i} style={
+                    m.role === "you" ? s.agYou : m.role === "agent" ? s.agBot : m.role === "tool" ? s.agTool : s.agSys
+                  }>{m.text}</div>
             ))}
             {agentBusy && <div style={{ ...s.agTool, display: "flex", alignItems: "center", gap: 6 }}><span style={s.spinner} /> generando…</div>}
             {agentLog.length === 0 && !agentBusy && (
