@@ -17,7 +17,7 @@ export default function OrdenesView({
   expandedModels, setExpandedModels,
   orderPiezas, orderSubtotal, orderCost, remitoGroups,
   downloadDoc, downloadSupplierRemitos, saveEditChanges, registerPastOperation, pdfBusy,
-  openTrades = [],
+  openTrades = [], loadImeisForTrade, imeiCountForTrade,
 }) {
   const s = styles;
 
@@ -36,14 +36,21 @@ export default function OrdenesView({
               <span style={{ marginLeft: "auto", color: "#8ee0a8", fontSize: 11.5 }}>→ {t.proximo_paso || "completo"}</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
-              {t.checkpoints.filter((c) => !c.skipped).map((c, i, arr) => (
-                <React.Fragment key={c.id}>
-                  <span title={c.label} style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap", background: c.done ? "#14331f" : "#1a1f2b", color: c.done ? "#8ee0a8" : "#6b7385", border: `1px solid ${c.done ? "#2f9e57" : "#242b3a"}` }}>
-                    {c.done ? "✓ " : "· "}{c.label}
-                  </span>
-                  {i < arr.length - 1 && <span style={{ color: "#3a4356", fontSize: 10 }}>—</span>}
-                </React.Fragment>
-              ))}
+              {t.checkpoints.filter((c) => !c.skipped).map((c, i, arr) => {
+                // el checkpoint de IMEIs es clickeable en facturas → abre el editor de IMEIs
+                const isImei = c.id === "datos" && t.tipo === "factura";
+                const cnt = isImei && imeiCountForTrade ? imeiCountForTrade(t) : null;
+                return (
+                  <React.Fragment key={c.id}>
+                    <span title={isImei ? "Cargar IMEIs (uno por unidad)" : c.label}
+                      onClick={isImei && loadImeisForTrade ? () => loadImeisForTrade(t) : undefined}
+                      style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap", cursor: isImei ? "pointer" : "default", background: c.done ? "#14331f" : "#1a1f2b", color: c.done ? "#8ee0a8" : (isImei ? "#e0b34d" : "#6b7385"), border: `1px solid ${c.done ? "#2f9e57" : (isImei ? "#5a4a1d" : "#242b3a")}` }}>
+                      {c.done ? "✓ " : "· "}{c.label}{cnt ? ` ${cnt.loaded}/${cnt.total}` : ""}{isImei ? " ✎" : ""}
+                    </span>
+                    {i < arr.length - 1 && <span style={{ color: "#3a4356", fontSize: 10 }}>—</span>}
+                  </React.Fragment>
+                );
+              })}
             </div>
           </div>
         ))}

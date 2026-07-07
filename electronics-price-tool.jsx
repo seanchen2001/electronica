@@ -995,6 +995,21 @@ export default function PriceDesk() {
     setInvoiceHistory((h) => h.map((rec) => (rec.ts !== ed.ts ? rec : { ...rec, items: apply(rec.items), order: rec.order ? { ...rec.order, items: apply(rec.order.items) } : rec.order })));
     setImeiEditor(null);
   }
+  // desde el panel TRADES: abrir el editor de IMEIs de una factura + contar IMEIs cargados
+  function loadImeisForTrade(t) {
+    if (!t || t.tipo !== "factura") return;
+    const rec = invoiceHistory.find((h) => h.ts === t.id);
+    if (rec) openImeiEditor(rec);
+  }
+  function imeiCountForTrade(t) {
+    if (!t || t.tipo !== "factura") return null;
+    const rec = invoiceHistory.find((h) => h.ts === t.id);
+    if (!rec) return null;
+    const items = rec.items || rec.order?.items || [];
+    const total = items.reduce((a, it) => a + (Number(it.qty) || 0), 0);
+    const loaded = items.reduce((a, it) => a + lineImeis(it).length, 0);
+    return { loaded, total };
+  }
   // Volver a una orden nueva (limpia el modo edición).
   function resetOrder() {
     const empty = { items: [], invoiceNo: String(nextInvoiceNo(invoiceHistory)), date: today(), payment: "W/T", fob: "Miami", salesperson: "", job: "", terms: "Due upon receipt", dueDate: today(), shippingCost: 0, deliveryAddr: "", stage: "cotizando" };
@@ -2130,6 +2145,7 @@ export default function PriceDesk() {
       {(view === "ordenes" || editingTs) && (
         <OrdenesView
           editingTs={editingTs} docType={docType} setDocType={setDocType} openTrades={openTrades}
+          loadImeisForTrade={loadImeisForTrade} imeiCountForTrade={imeiCountForTrade}
           drafts={drafts} activeId={activeId} switchOrder={switchOrder} deleteDraft={deleteDraft} resetOrder={resetOrder}
           clients={clients} orderClientId={orderClientId} setOrderClientId={setOrderClientId} selClient={selClient}
           shippings={shippings} orderShipId={orderShipId} setOrderShipId={setOrderShipId}
