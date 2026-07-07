@@ -1658,6 +1658,45 @@ export default function PriceDesk() {
       });
       return { status: "needs_confirmation", mensaje: `Esperando confirmación para unificar ${a.name} → ${b.name}.` };
     }
+    if (name === "batch_catalog") {
+      // varias operaciones de catálogo en UNA confirmación: deletes + merges + renames
+      const find = (n) => catalog.find((c) => c.name.toLowerCase() === String(n || "").trim().toLowerCase());
+      const ops = []; const runs = [];
+      for (const nm of (Array.isArray(args.deletes) ? args.deletes : [])) {
+        const cur = find(nm); if (!cur) continue;
+        ops.push(`🗑️ Borrar  ${cur.name}`);
+        runs.push(() => { setExtraCatalog((l) => l.filter((c) => c.name !== cur.name)); if (CATALOG.some((c) => c.name === cur.name)) setHiddenModels((h) => (h.includes(cur.name) ? h : [...h, cur.name])); clearSku(cur.name); });
+      }
+      for (const m of (Array.isArray(args.merges) ? args.merges : [])) {
+        const a = find(m?.from), b = find(m?.into); if (!a || !b || a.name === b.name) continue;
+        ops.push(`🔗 Unificar  ${a.name} → ${b.name}`);
+        runs.push(() => { migrateSku(a.name, b.name); setExtraCatalog((l) => l.filter((c) => c.name !== a.name)); if (CATALOG.some((c) => c.name === a.name)) setHiddenModels((h) => (h.includes(a.name) ? h : [...h, a.name])); });
+      }
+      for (const r of (Array.isArray(args.renames) ? args.renames : [])) {
+        const cur = find(r?.name); if (!cur) continue;
+        const newName = r.newName ? String(r.newName).trim() : cur.name;
+        const newCat = r.cat ? String(r.cat).trim() : cur.cat;
+        const newDept = r.dept ? String(r.dept).trim() : (cur.dept || DEFAULT_DEPT);
+        if (newName === cur.name && newCat === cur.cat && newDept === (cur.dept || DEFAULT_DEPT)) continue;
+        ops.push(`✏️ Editar  ${cur.name}${newName !== cur.name ? ` → ${newName}` : ""}${newDept !== (cur.dept || DEFAULT_DEPT) ? ` [${newDept}]` : ""}`);
+        runs.push(() => {
+          const isBase = CATALOG.some((c) => c.name === cur.name);
+          if (newName !== cur.name) {
+            if (isBase) { setHiddenModels((h) => (h.includes(cur.name) ? h : [...h, cur.name])); setExtraCatalog((l) => [...l.filter((c) => c.name !== cur.name), { name: newName, cat: newCat, dept: newDept }]); }
+            else setExtraCatalog((l) => l.map((c) => (c.name === cur.name ? { name: newName, cat: newCat, dept: newDept } : c)));
+            migrateSku(cur.name, newName);
+          } else setExtraCatalog((l) => (l.some((c) => c.name === cur.name) ? l.map((c) => (c.name === cur.name ? { name: cur.name, cat: newCat, dept: newDept } : c)) : [...l, { name: cur.name, cat: newCat, dept: newDept }]));
+        });
+      }
+      if (!ops.length) return { ok: false, error: "No hay operaciones válidas (revisá que los modelos existan)." };
+      setPendingDelete({
+        icon: "🧹", confirmLabel: `✓ Aplicar ${ops.length} cambio(s)`, confirmColor: "#16a34a",
+        titulo: `¿Aplicar estos ${ops.length} cambios al catálogo?`,
+        detalle: ops.join("\n"),
+        run: () => { for (const fn of runs) fn(); setAgentLog((l) => [...l, { role: "system", text: `✅ Apliqué ${ops.length} cambio(s) al catálogo.` }]); },
+      });
+      return { status: "needs_confirmation", operaciones: ops, mensaje: `Le mostré ${ops.length} cambios al usuario para confirmar TODOS de una.` };
+    }
     // ---- DELETE: borrar cliente / envío / proveedor (con guard de ambigüedad) ----
     if (name === "delete_client") {
       const q = String(args.name || "").trim().toLowerCase();

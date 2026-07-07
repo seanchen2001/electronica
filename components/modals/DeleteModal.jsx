@@ -14,7 +14,7 @@ export default function DeleteModal({ pending, onCancel, onConfirm }) {
       <div style={{ ...s.modalCard, width: "min(460px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ ...s.newHead, color: pending.confirmColor ? "#cfe3cf" : "#f0a0a0" }}>{icon} {pending.titulo}</div>
         {pending.detalle && (
-          <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 10 }}>{pending.detalle}</div>
+          <div style={{ fontSize: 12.5, color: "#cfd6e4", marginBottom: 10, whiteSpace: "pre-line", maxHeight: "50vh", overflowY: "auto" }}>{pending.detalle}</div>
         )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button onClick={onCancel} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
