@@ -52,6 +52,7 @@ import { computeAccounts, canonName, clientPulse } from "./lib/accounts.js";
 import { analyticsData, analyticsSummary } from "./lib/analytics.js";
 import { computeInventory } from "./lib/inventory.js";
 import { arbitrageScan } from "./lib/arbitrage.js";
+import { tradeStatus } from "./lib/trades.js";
 import AnaliticaView from "./components/AnaliticaView.jsx";
 import TrashPanel from "./components/TrashPanel.jsx";
 
@@ -1053,6 +1054,9 @@ export default function PriceDesk() {
   // Arbitrajes: proveedor muy por debajo de la mediana (solo aviso; distingue precio viejo)
   const arbAlerts = useMemo(() => arbitrageScan({ prices, times, catalog }, { gapPct: ARB_GAP_PCT }), [prices, times, catalog]);
 
+  // Estado del trade end-to-end: drafts (pre-venta) + facturas con checkpoints pendientes
+  const openTrades = useMemo(() => tradeStatus({ drafts, invoiceHistory, opsTracking, clients }), [drafts, invoiceHistory, opsTracking, clients]);
+
   // Operaciones post-venta: por cada factura, 3 checks (entrega afuera / local / pago).
   // pendingOps = las que tienen algo sin cerrar, ordenadas por más atrasado (para reclamar).
   function setOpsCheck(ts, key, val) { setOpsTracking((o) => ({ ...o, [ts]: { ...(o[ts] || {}), [key]: val } })); }
@@ -1701,6 +1705,41 @@ export default function PriceDesk() {
     if (name === "analytics_summary") {
       return analyticsSummary({ invoiceHistory, ledger }, args.period || "mes");
     }
+    if (name === "trade_status") {
+      const trades = tradeStatus({ drafts, invoiceHistory, opsTracking, clients }, args.ref);
+      if (args.ref && !trades.length) return { ok: false, error: `No encontré ningún trade que matchee "${args.ref}".` };
+      return {
+        trades: trades.map((t) => ({
+          ref: t.ref, cliente: t.cliente, tipo: t.tipo, dias: t.dias, total: t.total,
+          progreso: t.progreso, checkpoint_actual: t.actual, proximo_paso: t.proximo_paso,
+          pendientes: t.checkpoints.filter((c) => !c.done && !c.skipped).map((c) => c.label),
+          modelos: t.modelos,
+        })),
+        nota: "El checkpoint 'Datos' se deriva de color+IMEI de los items (se completa editando la factura). 'En Argentina' solo aplica si cargamos nosotros (set_trade_status cargamos_nosotros).",
+      };
+    }
+    if (name === "set_trade_status") {
+      const q = String(args.ref || "").toLowerCase().replace(/^#/, "").trim();
+      if (!q) return { ok: false, error: "Falta el ref del trade (factura# o cliente)." };
+      const f = invoiceHistory.find((x) => x.type === "factura" && String(x.no).toLowerCase() === q)
+        || invoiceHistory.find((x) => x.type === "factura" && (x.client || "").toLowerCase().includes(q) && (() => { const t = opsTracking[x.ts] || {}; return !(t.afuera && t.local && t.pago); })());
+      if (!f) return { ok: false, error: `No encontré una factura abierta que matchee "${args.ref}". Los checkpoints de trade se marcan sobre facturas (los pedidos pre-factura avanzan con set_order_stage).` };
+      const key = { miami: "afuera", afuera: "afuera", argentina: "local", local: "local", pago: "pago", pagado: "pago", cargamos_nosotros: "cargamosNosotros", cargamosnosotros: "cargamosNosotros" }[String(args.checkpoint || "").toLowerCase().replace(/\s+/g, "_")];
+      if (!key) return { ok: false, error: `Checkpoint inválido: "${args.checkpoint}". Válidos: miami (afuera), argentina (local), pago, cargamos_nosotros. 'datos' es derivado (se completa cargando color+IMEI en la factura).` };
+      const done = args.done !== false;
+      const labels = { afuera: "llegó a Miami FOB", local: "llegó a Argentina", pago: "pagó el cliente", cargamosNosotros: "cargamos nosotros (aplica el paso En Argentina)" };
+      // T1 — confirmación simple antes de mover el estado del trade
+      setPendingDelete({
+        titulo: `${done ? "Marcar" : "Desmarcar"}: ${labels[key]}`,
+        detalle: `Factura #${f.no} · ${f.client || "—"} · ${money(f.total)}`,
+        icon: "📦", confirmLabel: "✓ Confirmar", confirmColor: "#15803d",
+        run: () => {
+          setOpsCheck(f.ts, key, done);
+          setAgentLog((l) => [...l, { role: "system", text: `📦 Factura #${f.no}: ${done ? "✓" : "✗"} ${labels[key]}.` }]);
+        },
+      });
+      return { status: "needs_confirmation", factura: f.no, checkpoint: key, done, mensaje: "Le pedí al usuario una confirmación simple para mover el estado del trade." };
+    }
     if (name === "client_activity") {
       const pulse = clientPulse({ invoiceHistory, ledger, aliases, clients, opsTracking }, args.clientName);
       if (args.clientName && !pulse.length) return { ok: false, error: `No encontré actividad del cliente "${args.clientName}".` };
@@ -1995,7 +2034,7 @@ export default function PriceDesk() {
       {/* Órdenes: inline en su pestaña; cuando editás una factura vieja, flota como modal sobre el Historial (aislado de los pedidos pendientes). */}
       {(view === "ordenes" || editingTs) && (
         <OrdenesView
-          editingTs={editingTs} docType={docType} setDocType={setDocType}
+          editingTs={editingTs} docType={docType} setDocType={setDocType} openTrades={openTrades}
           drafts={drafts} activeId={activeId} switchOrder={switchOrder} deleteDraft={deleteDraft} resetOrder={resetOrder}
           clients={clients} orderClientId={orderClientId} setOrderClientId={setOrderClientId} selClient={selClient}
           shippings={shippings} orderShipId={orderShipId} setOrderShipId={setOrderShipId}
