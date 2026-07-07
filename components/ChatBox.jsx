@@ -6,6 +6,7 @@ export default function ChatBox({
   chatOpen, setChatOpen, chatScrollRef,
   agentLog, showSteps, setShowSteps, resetAgent, agentBusy,
   superOn, setSuperOn, knowledgeCount,
+  runImprovementReview, chatLogCount = 0,
   pendingOps = [], setOpsCheck,
   chatText, setChatText, chatImage, setChatImage, onChatPaste, submitChat, busyChat,
 }) {
@@ -53,7 +54,14 @@ export default function ChatBox({
                     <input type="checkbox" checked={!!superOn} onChange={(e) => setSuperOn(e.target.checked)} /> 🧭 supervisor{knowledgeCount ? ` (${knowledgeCount})` : ""}
                   </label>
                 </span>
-                <button onClick={resetAgent} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>Nueva conversación</button>
+                <span style={{ display: "inline-flex", gap: 6 }}>
+                  {runImprovementReview && (
+                    <button onClick={runImprovementReview} disabled={agentBusy}
+                      title={`Revisa las últimas conversaciones guardadas (${chatLogCount}) y mejora la memoria de reglas del agente`}
+                      style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>🧠 revisar chats</button>
+                  )}
+                  <button onClick={resetAgent} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0, fontSize: 11 }}>Nueva conversación</button>
+                </span>
               </div>
             )}
             {agentLog.filter((m) => showSteps || m.role !== "tool").map((m, i) => (

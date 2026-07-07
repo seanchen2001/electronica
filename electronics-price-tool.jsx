@@ -10,7 +10,7 @@ import {
 // so the numbers never land in the public bundle.
 import { pdf } from "@react-pdf/renderer";
 import InvoiceDoc, { RemitosDoc } from "./InvoiceDoc.jsx";
-import { AGENT_TOOLS, buildAgentSystem, REVIEW_SYSTEM, buildSupervisorSystem, SUPERVISOR_LOW_RISK } from "./lib/agent-tools.js";
+import { AGENT_TOOLS, buildAgentSystem, REVIEW_SYSTEM, buildSupervisorSystem, SUPERVISOR_LOW_RISK, buildImprovementSystem } from "./lib/agent-tools.js";
 import styles from "./styles.js";
 import PnLView from "./components/PnLView.jsx";
 import HistorialView from "./components/HistorialView.jsx";
@@ -26,7 +26,7 @@ import OrdenesView from "./components/OrdenesView.jsx";
 import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
-  TRASH_KEY, TRASH_TTL_MS, PRICE_AUTO_THRESHOLD, ARB_GAP_PCT,
+  TRASH_KEY, TRASH_TTL_MS, PRICE_AUTO_THRESHOLD, ARB_GAP_PCT, CHAT_LOG_KEY, AUTO_IMPROVE,
   DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, DEPTS, DEFAULT_DEPT, COMPANY, supplierCode, MONTHS_ES,
 } from "./lib/constants.js";
 import {
@@ -80,7 +80,8 @@ export default function PriceDesk() {
   const [supplierList, setSupplierList] = useState(() => load(SUPP_KEY, SUPPLIERS));
   const [supplierDepts, setSupplierDepts] = useState(() => load("desk-supplier-depts-v1", {})); // proveedor -> [departamentos] (qué columnas aparecen en cada depto)
   const [knowledgeBase, setKnowledgeBase] = useState(() => load("desk-knowledge-v1", [])); // reglas aprendidas (memoria del sistema) que usa el agente
-  const [opsTracking, setOpsTracking] = useState(() => load("desk-ops-v1", {})); // seguimiento post-venta por factura(ts): { afuera, local, pago }
+  const [opsTracking, setOpsTracking] = useState(() => load("desk-ops-v1", {})); // seguimiento post-venta por factura(ts): { afuera, local, pago, cargamosNosotros }
+  const [chatLog, setChatLog] = useState(() => load(CHAT_LOG_KEY, [])); // conversaciones del agente (sustrato de auto-mejora): [{ts, userText, actions, finalText}]
   const [superOn, setSuperOn] = useState(() => load("desk-supervisor-on", true)); // supervisor (Gemini Pro) activado
   const [newSupplier, setNewSupplier] = useState("");
   // Orden por categoría (estable): junta todos los de una misma categoría, aunque se hayan
@@ -227,6 +228,7 @@ export default function PriceDesk() {
   useEffect(() => { try { localStorage.setItem("desk-supplier-depts-v1", JSON.stringify(supplierDepts)); } catch {} }, [supplierDepts]);
   useEffect(() => { try { localStorage.setItem("desk-knowledge-v1", JSON.stringify(knowledgeBase)); } catch {} }, [knowledgeBase]);
   useEffect(() => { try { localStorage.setItem("desk-ops-v1", JSON.stringify(opsTracking)); } catch {} }, [opsTracking]);
+  useEffect(() => { try { localStorage.setItem(CHAT_LOG_KEY, JSON.stringify(chatLog)); } catch {} }, [chatLog]);
   useEffect(() => { try { localStorage.setItem("desk-supervisor-on", JSON.stringify(superOn)); } catch {} }, [superOn]);
   useEffect(() => { try { localStorage.setItem(ALIASES_KEY, JSON.stringify(aliases)); } catch {} }, [aliases]);
   useEffect(() => { try { localStorage.setItem(TIERS_KEY, JSON.stringify(tiers)); } catch {} }, [tiers]);
@@ -308,6 +310,7 @@ export default function PriceDesk() {
         setSupplierList((sl) => resolve(d.suppliers, sl, "suppliers"));
         setSupplierDepts((sd) => resolveObj(d.supplierDepts, sd, "supplierDepts"));
         setKnowledgeBase((kb) => resolve(d.knowledge, kb, "knowledge"));
+        setChatLog((cl) => resolve(d.chatLog, cl, "chatLog"));
         setOpsTracking((o) => resolveObj(d.ops, o, "ops"));
         setAliases((al) => resolveObj(d.aliases, al, "aliases"));
         if (!skipObjects) {
@@ -351,6 +354,7 @@ export default function PriceDesk() {
   useEffect(() => { syncUp("supplierDepts", supplierDepts); }, [supplierDepts]);
   useEffect(() => { syncUp("knowledge", knowledgeBase); }, [knowledgeBase]);
   useEffect(() => { syncUp("ops", opsTracking); }, [opsTracking]);
+  useEffect(() => { syncUp("chatLog", chatLog); }, [chatLog]);
   useEffect(() => { syncUp("aliases", aliases); }, [aliases]);
   useEffect(() => { syncUp("tiers", tiers); }, [tiers]);
   useEffect(() => { syncUp("priceHistory", priceHistory); }, [priceHistory]);
@@ -1711,6 +1715,30 @@ export default function PriceDesk() {
     if (name === "analytics_summary") {
       return analyticsSummary({ invoiceHistory, ledger }, args.period || "mes");
     }
+    if (name === "profitability_review") {
+      const own = new Set(clients.filter((c) => c.esNuestra).map((c) => c.id));
+      const byModel = {};
+      for (const f of invoiceHistory) {
+        if (f.type !== "factura" || own.has(f.clientId)) continue;
+        for (const it of f.items || []) {
+          const m = (byModel[it.sku] ||= { modelo: it.sku, piezas: 0, margen_contable: 0, margen_real: 0, costo_promedio_real: null });
+          const q = Number(it.qty) || 0, pr = Number(it.price) || 0, co = Number(it.cost) || 0;
+          m.piezas += q; m.margen_contable += q * (pr - co);
+          const avg = inventory[it.sku]?.avgCost;
+          if (avg != null) { m.margen_real += q * (pr - avg); m.costo_promedio_real = avg; }
+          else m.margen_real += q * (pr - co); // sin costo real trackeado, cae al contable
+        }
+      }
+      const modelos = Object.values(byModel)
+        .map((m) => ({ ...m, margen_contable: +m.margen_contable.toFixed(2), margen_real: +m.margen_real.toFixed(2) }))
+        .sort((a, b) => b.margen_real - a.margen_real);
+      const resumen = analyticsSummary({ invoiceHistory, ledger }, args.period || "todo");
+      return {
+        modelos, perdedores: modelos.filter((m) => m.margen_real < 0),
+        top_clientes: resumen.top_clientes, top_proveedores: resumen.top_proveedores,
+        nota: "margen_real usa el costo promedio realmente pagado (inventario) cuando existe; si no, cae al costo contable de la factura. 'perdedores' = modelos que pierden plata a costo real.",
+      };
+    }
     if (name === "trade_status") {
       const trades = tradeStatus({ drafts, invoiceHistory, opsTracking, clients }, args.ref);
       if (args.ref && !trades.length) return { ok: false, error: `No encontré ningún trade que matchee "${args.ref}".` };
@@ -1903,6 +1931,7 @@ export default function PriceDesk() {
     parts.push({ text: (userText || "(mirá la imagen adjunta para contexto)") + "\n\nESTADO: " + JSON.stringify(stateSnapshot) });
     const contents = [...agentContents.current, { role: "user", parts }];
     const turnActions = []; // acciones del worker en este turno (para el supervisor)
+    let finalText = ""; // respuesta final del turno (para el registro de conversaciones)
     try {
       for (let step = 0; step < 8; step++) {
         const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048 });
@@ -1910,7 +1939,7 @@ export default function PriceDesk() {
         const calls = (cand.parts || []).filter((p) => p.functionCall).map((p) => p.functionCall);
         const textOut = (cand.parts || []).filter((p) => p.text).map((p) => p.text).join("").trim();
         // solo mostramos la respuesta FINAL (turno sin herramientas); la narración intermedia se oculta
-        if (textOut && !calls.length) setAgentLog((l) => [...l, { role: "agent", text: textOut }]);
+        if (textOut && !calls.length) { finalText = textOut; setAgentLog((l) => [...l, { role: "agent", text: textOut }]); }
         if (!calls.length) break;
         const responses = [];
         let paused = false;
@@ -1927,12 +1956,39 @@ export default function PriceDesk() {
         if (paused) break;
       }
       agentContents.current = contents;
+      // registro de conversaciones (sustrato de auto-mejora): cada turno queda persistido
+      setChatLog((cl) => [...cl, { ts: Date.now(), userText, actions: turnActions, finalText }].slice(-500));
+      // TODO Fase 2 (AUTO_IMPROVE en lib/constants.js): disparar runImprovementReview()
+      // automáticamente cada 25 conversaciones — por ahora es manual (botón 🧠 del chatbox).
+      // if (AUTO_IMPROVE && (chatLog.length + 1) % 25 === 0) runImprovementReview();
       await runSupervisor(userText, turnActions); // el supervisor (Pro) revisa, corrige lo de bajo riesgo y aprende
     } catch (e) {
       setAgentLog((l) => [...l, { role: "system", text: "Error: " + (e?.message || e) }]);
     } finally {
       setAgentBusy(false);
     }
+  }
+  // Reviewer de conversaciones (manual por ahora; el auto-trigger cada 25 chats es Fase 2 — AUTO_IMPROVE).
+  // Lee las últimas conversaciones y propone altas/bajas a la knowledge base del agente.
+  async function runImprovementReview() {
+    if (!apiKey.trim()) { setAgentLog((l) => [...l, { role: "system", text: "Falta la API key para revisar conversaciones." }]); return; }
+    const logs = chatLog.slice(-25);
+    if (!logs.length) { setAgentLog((l) => [...l, { role: "system", text: "Todavía no hay conversaciones guardadas para revisar." }]); return; }
+    setAgentBusy(true);
+    try {
+      const out = await callGemini({ system: buildImprovementSystem({ learned: knowledgeBase }), content: JSON.stringify(logs), apiKey: apiKey.trim(), json: true, maxTokens: 1024, model: SUPERVISOR_MODEL });
+      const p = JSON.parse(stripFences(out));
+      const learn = (Array.isArray(p.learn) ? p.learn : []).map((r) => String(r).trim()).filter((r) => r && !knowledgeBase.some((k) => k.toLowerCase() === r.toLowerCase()));
+      const drop = (Array.isArray(p.drop) ? p.drop : []).map((r) => String(r).toLowerCase());
+      if (learn.length || drop.length) {
+        setKnowledgeBase((kb) => [...kb.filter((k) => !drop.includes(k.toLowerCase())), ...learn]);
+        setAgentLog((l) => [...l, { role: "system", text: `🧠 Revisé ${logs.length} conversación(es):${learn.length ? " aprendí " + learn.map((x) => `“${x}”`).join(" · ") : ""}${drop.length ? ` · saqué ${drop.length} regla(s) vieja(s)` : ""}` }]);
+      } else {
+        setAgentLog((l) => [...l, { role: "system", text: `🧠 Revisé ${logs.length} conversación(es): sin cambios a la memoria.` }]);
+      }
+    } catch (e) {
+      setAgentLog((l) => [...l, { role: "system", text: "Error revisando conversaciones: " + (e?.message || e) }]);
+    } finally { setAgentBusy(false); }
   }
   async function confirmAgentCommit() {
     const c = pendingAgentCommit; setPendingAgentCommit(null);
@@ -1972,6 +2028,7 @@ export default function PriceDesk() {
       chatOpen={chatOpen} setChatOpen={setChatOpen} chatScrollRef={chatScrollRef}
       agentLog={agentLog} showSteps={showSteps} setShowSteps={setShowSteps} resetAgent={resetAgent} agentBusy={agentBusy}
       superOn={superOn} setSuperOn={setSuperOn} knowledgeCount={knowledgeBase.length}
+      runImprovementReview={runImprovementReview} chatLogCount={chatLog.length}
       pendingOps={pendingOps} setOpsCheck={setOpsCheck}
       chatText={chatText} setChatText={setChatText} chatImage={chatImage} setChatImage={setChatImage}
       onChatPaste={onChatPaste} submitChat={submitChat} busyChat={busyChat} />
