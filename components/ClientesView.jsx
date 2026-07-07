@@ -26,6 +26,10 @@ export default function ClientesView({
             <input type="checkbox" checked={!!clientForm.cuentaCorriente} onChange={(e) => setClientField("cuentaCorriente", e.target.checked)} />
             Tiene cuenta corriente
           </label>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 12, color: "#cfd6e4", cursor: "pointer" }} title="Cuenta propia: lo que se le factura cuenta como COMPRA a inventario (stock in), no como venta.">
+            <input type="checkbox" checked={!!clientForm.esNuestra} onChange={(e) => setClientField("esNuestra", e.target.checked)} />
+            Es cuenta nuestra (compras a inventario)
+          </label>
           <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
             <button onClick={saveClient} style={s.toolBtn}>{clientForm.id ? "Actualizar" : "Guardar"} cliente</button>
             {clientForm.id && <button onClick={deleteClient} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Borrar</button>}

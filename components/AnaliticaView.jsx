@@ -4,10 +4,12 @@ import { money } from "../lib/helpers.js";
 
 // Pestaña Analítica: agregados derivados del Historial — margen por mes (barras),
 // top clientes, top proveedores y top modelos. No usa storage propio.
-export default function AnaliticaView({ data }) {
+export default function AnaliticaView({ data, inventory = {}, lista = {} }) {
   const s = styles;
   const card = { background: "#11151f", border: "1px solid #1c2230", borderRadius: 6, padding: 12, flex: "1 1 280px", minWidth: 260 };
   const maxV = Math.max(...data.monthly.map((m) => m.ventas), 1);
+  // inventario derivado (compras a cuentas nuestras − ventas); solo SKUs con movimiento
+  const invRows = Object.values(inventory).filter((r) => r.entradas > 0 || r.onHand !== 0).sort((a, b) => b.onHand - a.onHand);
   const rank = (rows, render) => (
     <table style={{ ...s.invTable, marginTop: 6 }}>
       <tbody>{rows.map(render)}</tbody>
@@ -93,6 +95,38 @@ export default function AnaliticaView({ data }) {
                 </tr>
               ))}
             </div>
+            {invRows.length > 0 && (
+              <div style={card}>
+                <div style={s.sectionTitle}>INVENTARIO — stock y costo promedio real</div>
+                <table style={{ ...s.invTable, marginTop: 6 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...s.invTd, textAlign: "left", color: "#6b7385" }}>Modelo</th>
+                      <th style={{ ...s.invTd, color: "#6b7385" }}>Stock</th>
+                      <th style={{ ...s.invTd, color: "#6b7385" }}>Costo prom.</th>
+                      <th style={{ ...s.invTd, color: "#6b7385" }}>Lista</th>
+                      <th style={{ ...s.invTd, color: "#6b7385" }}>Margen real</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invRows.slice(0, 12).map((r) => {
+                      const lp = lista[r.sku];
+                      const mReal = r.avgCost != null && lp != null ? lp - r.avgCost : null;
+                      return (
+                        <tr key={r.sku}>
+                          <td style={{ ...s.invTd, textAlign: "left", color: "#cfd6e4" }}>{r.sku}</td>
+                          <td style={{ ...s.invTd, color: r.onHand < 0 ? "#f87171" : "#cfd6e4" }}>{r.onHand}</td>
+                          <td style={{ ...s.invTd, color: "#9aa4b2" }}>{r.avgCost != null ? money(r.avgCost) : "—"}</td>
+                          <td style={{ ...s.invTd, color: "#fbbf24" }}>{lp != null ? money(lp) : "—"}</td>
+                          <td style={{ ...s.invTd, color: mReal == null ? "#6b7385" : mReal >= 0 ? "#4ade80" : "#f87171" }}>{mReal != null ? money(mReal) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 10, color: "#6b7385", marginTop: 6 }}>stock = compras a cuentas nuestras − ventas · costo prom. ponderado de las entradas · margen real = lista − costo prom.</div>
+              </div>
+            )}
             <div style={card}>
               <div style={s.sectionTitle}>TOP MODELOS POR VOLUMEN</div>
               {rank(data.topModelos.slice(0, 8), (m, i) => (

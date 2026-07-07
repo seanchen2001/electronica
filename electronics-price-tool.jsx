@@ -50,6 +50,7 @@ import {
 } from "./lib/ai.js";
 import { computeAccounts, canonName } from "./lib/accounts.js";
 import { analyticsData, analyticsSummary } from "./lib/analytics.js";
+import { computeInventory } from "./lib/inventory.js";
 import AnaliticaView from "./components/AnaliticaView.jsx";
 import TrashPanel from "./components/TrashPanel.jsx";
 
@@ -1045,6 +1046,9 @@ export default function PriceDesk() {
   // Analítica (pestaña + tool del agente) — derivada del historial, sin storage propio
   const analytics = useMemo(() => analyticsData({ invoiceHistory }), [invoiceHistory]);
 
+  // Inventario derivado: compras a cuentas nuestras = stock in, ventas = stock out
+  const inventory = useMemo(() => computeInventory({ invoiceHistory, clients }), [invoiceHistory, clients]);
+
   // Operaciones post-venta: por cada factura, 3 checks (entrega afuera / local / pago).
   // pendingOps = las que tienen algo sin cerrar, ordenadas por más atrasado (para reclamar).
   function setOpsCheck(ts, key, val) { setOpsTracking((o) => ({ ...o, [ts]: { ...(o[ts] || {}), [key]: val } })); }
@@ -1245,6 +1249,14 @@ export default function PriceDesk() {
       if (!l.precio) issues.push(`${l.modelo}: sin precio de venta.`);
       if (!l.cantidad) issues.push(`${l.modelo}: cantidad 0.`);
       if (l.precio && l.costo && l.precio < l.costo) issues.push(`${l.modelo}: precio por debajo del costo.`);
+    }
+    // stock: no sobrevender (solo si el destino no es una cuenta nuestra y el SKU tiene inventario trackeado)
+    const cliRev = clients.find((c) => c.id === orderClientId);
+    if (!cliRev?.esNuestra) {
+      for (const l of summary.lineas) {
+        const inv = inventory[l.modelo];
+        if (inv && inv.entradas > 0 && l.cantidad > inv.onHand) issues.push(`${l.modelo}: vendés ${l.cantidad} pero hay ${inv.onHand} en stock (costo prom. $${inv.avgCost}).`);
+      }
     }
     try {
       const out = await callGemini({ system: REVIEW_SYSTEM, content: JSON.stringify(summary), apiKey: apiKey.trim(), json: true, maxTokens: 512 });
@@ -1457,11 +1469,11 @@ export default function PriceDesk() {
       if (!nm) return { ok: false, error: "Falta el nombre del cliente." };
       const ex = clients.find((c) => (c.name || "").toLowerCase() === nm.toLowerCase());
       if (ex) {
-        const upd = { ...ex, address: args.address ?? ex.address, ruc: args.ruc ?? ex.ruc, phone: args.phone ?? ex.phone, cuentaCorriente: args.cuentaCorriente != null ? !!args.cuentaCorriente : ex.cuentaCorriente };
+        const upd = { ...ex, address: args.address ?? ex.address, ruc: args.ruc ?? ex.ruc, phone: args.phone ?? ex.phone, cuentaCorriente: args.cuentaCorriente != null ? !!args.cuentaCorriente : ex.cuentaCorriente, esNuestra: args.esNuestra != null ? !!args.esNuestra : ex.esNuestra };
         setClients((prev) => prev.map((c) => (c.id === ex.id ? upd : c)));
         return { ok: true, actualizado: true, cliente: nm, id: ex.id };
       }
-      const nc = { id: "cl" + Date.now(), name: nm, address: args.address || "", ruc: args.ruc || "", phone: args.phone || "", cuentaCorriente: !!args.cuentaCorriente };
+      const nc = { id: "cl" + Date.now(), name: nm, address: args.address || "", ruc: args.ruc || "", phone: args.phone || "", cuentaCorriente: !!args.cuentaCorriente, esNuestra: !!args.esNuestra };
       setClients((prev) => [...prev, nc]);
       return { ok: true, creado: true, cliente: nm, id: nc.id };
     }
@@ -1684,6 +1696,23 @@ export default function PriceDesk() {
     }
     if (name === "analytics_summary") {
       return analyticsSummary({ invoiceHistory, ledger }, args.period || "mes");
+    }
+    if (name === "inventory_status") {
+      const rows = Object.values(inventory);
+      if (!rows.length) return { ok: true, inventario: [], nota: "Sin movimientos de inventario. Marcá la cuenta de compras propias con esNuestra para trackear entradas." };
+      if (args.sku) {
+        const q = String(args.sku).toLowerCase();
+        const hit = rows.find((r) => r.sku.toLowerCase() === q) || rows.find((r) => r.sku.toLowerCase().includes(q));
+        if (!hit) return { ok: false, error: `No tengo movimientos de inventario para "${args.sku}".` };
+        return { ...hit, precio_lista: lista[hit.sku] ?? null, margen_real_vs_lista: hit.avgCost != null && lista[hit.sku] != null ? +(lista[hit.sku] - hit.avgCost).toFixed(2) : null };
+      }
+      return {
+        inventario: rows
+          .filter((r) => r.entradas > 0 || r.onHand !== 0)
+          .sort((a, b) => b.onHand - a.onHand)
+          .map((r) => ({ sku: r.sku, stock: r.onHand, costo_promedio: r.avgCost, entradas: r.entradas, salidas: r.salidas })),
+        nota: "stock = entradas (compras a cuentas nuestras) − salidas (ventas). costo_promedio = ponderado de las entradas.",
+      };
     }
     // ---- CUENTAS: consultar saldos y registrar movimientos por chat ----
     if (name === "list_accounts") {
@@ -1982,7 +2011,7 @@ export default function PriceDesk() {
 
       {view === "pnl" && <PnLView pnlView={pnlView} />}
 
-      {view === "analitica" && <AnaliticaView data={analytics} />}
+      {view === "analitica" && <AnaliticaView data={analytics} inventory={inventory} lista={lista} />}
 
       {view === "historial" && (
         <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory}
