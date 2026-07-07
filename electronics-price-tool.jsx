@@ -1913,6 +1913,33 @@ export default function PriceDesk() {
       setOpsCheck(rec.ts, key, val);
       return { ok: true, factura: rec.no, check: key, hecho: val };
     }
+    if (name === "load_imeis") {
+      const no = String(args.invoiceNo || "").trim();
+      const rec = invoiceHistory.find((h) => String(h.no) === no && h.type === "factura");
+      if (!rec) return { ok: false, error: `No encontré la factura #${no}.`, facturas: invoiceHistory.filter((h) => h.type === "factura").slice(0, 12).map((h) => h.no) };
+      const items = rec.items || rec.order?.items || [];
+      const assigns = Array.isArray(args.assignments) ? args.assignments : [];
+      if (!assigns.length) return { ok: false, error: "Falta 'assignments' con {model, imeis} agrupados por modelo." };
+      const inc = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
+      const newImeis = items.map((it) => [...lineImeis(it)]);
+      const result = []; const usados = new Set();
+      for (const as of assigns) {
+        const model = String(as.model || "").trim();
+        const imeis = (Array.isArray(as.imeis) ? as.imeis : []).map((x) => String(x).trim()).filter(Boolean);
+        if (!imeis.length) continue;
+        let idx = items.findIndex((it, i) => !usados.has(i) && String(it.sku).toLowerCase() === model.toLowerCase());
+        if (idx < 0) idx = items.findIndex((it, i) => !usados.has(i) && (inc(it.sku, model) || inc(model, it.sku)));
+        if (idx < 0) { result.push({ modelo: model, error: "no matcheó ninguna línea", imeis: imeis.length }); continue; }
+        usados.add(idx); newImeis[idx] = imeis;
+        const qty = Number(items[idx].qty) || 0;
+        result.push({ modelo: items[idx].sku, cargados: imeis.length, esperados: qty, completo: qty ? imeis.length >= qty : imeis.length > 0 });
+      }
+      const apply = (arr) => (arr || []).map((it, i) => ({ ...it, imeis: newImeis[i] }));
+      setInvoiceHistory((h) => h.map((r) => (r.ts !== rec.ts ? r : { ...r, items: apply(r.items), order: r.order ? { ...r.order, items: apply(r.order.items) } : r.order })));
+      const total = items.reduce((a, it) => a + (Number(it.qty) || 0), 0);
+      const loaded = newImeis.reduce((a, arr) => a + arr.length, 0);
+      return { ok: true, factura: rec.no, lineas: result, total_cargados: loaded, total_esperados: total, completo: loaded >= total, nota: "IMEIs guardados. Si alguna línea dice 'no matcheó', avisá al usuario cuál." };
+    }
     if (name === "render_table") {
       const art = {
         kind: "table", title: String(args.title || ""),
