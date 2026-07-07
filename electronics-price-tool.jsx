@@ -1913,6 +1913,16 @@ export default function PriceDesk() {
       setOpsCheck(rec.ts, key, val);
       return { ok: true, factura: rec.no, check: key, hecho: val };
     }
+    if (name === "invoice_items") {
+      const no = String(args.invoiceNo || "").trim();
+      const rec = invoiceHistory.find((h) => String(h.no) === no && h.type === "factura");
+      if (!rec) return { ok: false, error: `No encontré la factura #${no}.`, facturas: invoiceHistory.filter((h) => h.type === "factura").slice(0, 12).map((h) => ({ no: h.no, cliente: h.client })) };
+      const items = rec.items || rec.order?.items || [];
+      return {
+        factura: rec.no, cliente: rec.client || "—",
+        lineas: items.map((it) => { const cargados = lineImeis(it).length; const qty = Number(it.qty) || 0; return { modelo: it.sku, color: it.color || "", cantidad: qty, imeis_cargados: cargados, imeis_faltan: Math.max(0, qty - cargados) }; }),
+      };
+    }
     if (name === "load_imeis") {
       const no = String(args.invoiceNo || "").trim();
       const rec = invoiceHistory.find((h) => String(h.no) === no && h.type === "factura");
