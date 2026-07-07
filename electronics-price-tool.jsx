@@ -1749,7 +1749,7 @@ export default function PriceDesk() {
           pendientes: t.checkpoints.filter((c) => !c.done && !c.skipped).map((c) => c.label),
           modelos: t.modelos,
         })),
-        nota: "El checkpoint 'Datos' se deriva de color+IMEI de los items (se completa editando la factura). 'En Argentina' solo aplica si cargamos nosotros (set_trade_status cargamos_nosotros).",
+        nota: "El checkpoint 'Datos' se deriva de IMEIs (uno por unidad) de los items (se completa editando la factura). 'En Argentina' solo aplica si cargamos nosotros (set_trade_status cargamos_nosotros).",
       };
     }
     if (name === "set_trade_status") {
@@ -1759,7 +1759,7 @@ export default function PriceDesk() {
         || invoiceHistory.find((x) => x.type === "factura" && (x.client || "").toLowerCase().includes(q) && (() => { const t = opsTracking[x.ts] || {}; return !(t.afuera && t.local && t.pago); })());
       if (!f) return { ok: false, error: `No encontré una factura abierta que matchee "${args.ref}". Los checkpoints de trade se marcan sobre facturas (los pedidos pre-factura avanzan con set_order_stage).` };
       const key = { miami: "afuera", afuera: "afuera", argentina: "local", local: "local", pago: "pago", pagado: "pago", cargamos_nosotros: "cargamosNosotros", cargamosnosotros: "cargamosNosotros" }[String(args.checkpoint || "").toLowerCase().replace(/\s+/g, "_")];
-      if (!key) return { ok: false, error: `Checkpoint inválido: "${args.checkpoint}". Válidos: miami (afuera), argentina (local), pago, cargamos_nosotros. 'datos' es derivado (se completa cargando color+IMEI en la factura).` };
+      if (!key) return { ok: false, error: `Checkpoint inválido: "${args.checkpoint}". Válidos: miami (afuera), argentina (local), pago, cargamos_nosotros. 'datos' es derivado (se completa cargando IMEIs (uno por unidad) en la factura).` };
       const done = args.done !== false;
       const labels = { afuera: "llegó a Miami FOB", local: "llegó a Argentina", pago: "pagó el cliente", cargamosNosotros: "cargamos nosotros (aplica el paso En Argentina)" };
       // T1 — confirmación simple antes de mover el estado del trade
