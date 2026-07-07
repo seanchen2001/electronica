@@ -48,7 +48,7 @@ import {
   resolveSkuSmart as resolveSkuSmartAI,
   whatsappQuoteText as whatsappQuoteTextPure,
 } from "./lib/ai.js";
-import { computeAccounts, canonName } from "./lib/accounts.js";
+import { computeAccounts, canonName, clientPulse } from "./lib/accounts.js";
 import { analyticsData, analyticsSummary } from "./lib/analytics.js";
 import { computeInventory } from "./lib/inventory.js";
 import { arbitrageScan } from "./lib/arbitrage.js";
@@ -1700,6 +1700,14 @@ export default function PriceDesk() {
     }
     if (name === "analytics_summary") {
       return analyticsSummary({ invoiceHistory, ledger }, args.period || "mes");
+    }
+    if (name === "client_activity") {
+      const pulse = clientPulse({ invoiceHistory, ledger, aliases, clients, opsTracking }, args.clientName);
+      if (args.clientName && !pulse.length) return { ok: false, error: `No encontré actividad del cliente "${args.clientName}".` };
+      return {
+        clientes: pulse,
+        nota: "Ordenado por urgencia (deuda y días). 'pendientes' = facturas con entrega/pago sin completar; 'flags' es el resumen para avisar.",
+      };
     }
     if (name === "arbitrage_scan") {
       const alerts = arbitrageScan({ prices, times, catalog }, { gapPct: Number(args.gapPct) || ARB_GAP_PCT });
