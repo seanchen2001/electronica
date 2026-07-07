@@ -20,6 +20,7 @@ export default function OrdenesView({
   openTrades = [], loadImeisForTrade, imeiCountForTrade,
 }) {
   const s = styles;
+  const [imeiLine, setImeiLine] = React.useState(null); // { idx, sku, color, qty, text } — cargar IMEIs de una línea
 
   // Línea de tiempo de trades abiertos: facturas con checkpoints pendientes + pedidos en armado
   const tradeTimeline = !editingTs && openTrades.length > 0 && (
@@ -204,7 +205,17 @@ export default function OrdenesView({
                       <input value={it.color || ""} onChange={(e) => setItem(idx, "color", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 72, border: "1px solid #232a3a" }} />
                       <span style={s.chipSplit} title="Splitear: duplica esta línea para otro color" onClick={() => splitItem(idx)}>+</span>
                     </td>
-                    <td style={s.invTd}><input value={it.imei || ""} onChange={(e) => setItem(idx, "imei", e.target.value)} placeholder="—" title="IMEI(s) — uno o varios" style={{ ...s.cellInput, width: 110, border: "1px solid #232a3a" }} /></td>
+                    <td style={s.invTd}>{(() => {
+                      const arr = Array.isArray(it.imeis) ? it.imeis.filter((x) => String(x).trim()) : (it.imei ? [it.imei] : []);
+                      const qty = Number(it.qty) || 0; const done = qty > 0 && arr.length >= qty;
+                      return (
+                        <button onClick={() => setImeiLine({ idx, sku: it.sku, color: it.color || "", qty, text: arr.join("\n") })}
+                          title="Cargar los IMEIs de esta línea (pegá la columna de Excel, uno por renglón)"
+                          style={{ ...s.miniBtn, borderColor: done ? "#3a5" : "#5a4a1d", color: done ? "#8ee0a8" : "#e0b34d", width: 96 }}>
+                          📱 {arr.length}/{qty || "?"}
+                        </button>
+                      );
+                    })()}</td>
                     <td style={s.invTd}><input value={it.spec || ""} onChange={(e) => setItem(idx, "spec", e.target.value)} placeholder="—" style={{ ...s.cellInput, width: 60, border: "1px solid #232a3a" }} /></td>
                     <td style={s.invTd}>
                       <select value={it.supplier || ""} onChange={(e) => setItemSupplier(idx, e.target.value)} style={{ ...s.cellInput, width: 132, border: "1px solid #232a3a" }}>
@@ -281,6 +292,30 @@ export default function OrdenesView({
         </span>
       </div>
     </section>
+
+    {/* Cargar IMEIs de una línea: pegás la columna (uno por renglón) */}
+    {imeiLine && (() => {
+      const count = imeiLine.text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).length;
+      const ok = imeiLine.qty ? count >= imeiLine.qty : count > 0;
+      return (
+        <div style={s.modalOverlay} onClick={() => setImeiLine(null)}>
+          <div style={{ ...s.modalCard, width: "min(460px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div style={s.newHead}>📱 IMEIs — {imeiLine.sku}{imeiLine.color ? ` · ${imeiLine.color}` : ""}</div>
+            <div style={{ fontSize: 12, color: ok ? "#8ee0a8" : "#e0b34d", marginBottom: 6 }}>
+              {count}/{imeiLine.qty} · pegá la columna del Excel, un IMEI por renglón{count > imeiLine.qty ? ` · ⚠ sobran ${count - imeiLine.qty}` : ""}
+            </div>
+            <textarea value={imeiLine.text} autoFocus
+              onChange={(e) => setImeiLine((v) => ({ ...v, text: e.target.value }))}
+              rows={10} placeholder={`Pegá ${imeiLine.qty} IMEIs, uno por renglón…`}
+              style={{ ...s.invArea, width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 11.5 }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 6 }}>
+              <button onClick={() => setImeiLine(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
+              <button onClick={() => { setItem(imeiLine.idx, "imeis", imeiLine.text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean)); setImeiLine(null); }} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>💾 Guardar</button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
     </div>
   );
 }
