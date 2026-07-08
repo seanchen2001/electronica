@@ -554,6 +554,9 @@ export default function PriceDesk() {
     const cat = m.cat ? m.cat : (dept === DEFAULT_DEPT ? "Samsung" : dept); // categoría libre fuera de Teléfonos
     setExtraCatalog((c) => (c.some((x) => x.name === m.name) || CATALOG.some((x) => x.name === m.name) ? c : [...c, { name: m.name.trim(), cat, dept }]));
     if (m.price != null) {
+      // asegurar que el proveedor exista y quede asociado al departamento (para que aparezca la columna y se agregue)
+      if (m.supplier && !supplierList.some((s) => s.toLowerCase() === String(m.supplier).toLowerCase())) setSupplierList((l) => [...l, m.supplier]);
+      if (m.supplier && dept !== DEFAULT_DEPT) setSupplierDepts((sd) => { const cur = sd[m.supplier] || []; return cur.includes(dept) ? sd : { ...sd, [m.supplier]: [...cur, dept] }; });
       setPrices((prev) => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [m.supplier]: m.price } }));
       stampTimes([[m.name, m.supplier, false]]);
       logPrices([{ sku: m.name, supplier: m.supplier, price: m.price }]);
@@ -611,7 +614,10 @@ export default function PriceDesk() {
       const fr = {};
       const freshPrices = {};
       const allVals = [];
-      for (const sp of supplierList) {
+      // TODOS los proveedores con precio para este modelo (aunque el proveedor no esté en supplierList,
+      // ej. un proveedor de iPhone que quedó sin agregar) — así los agregados/coloreo no lo ignoran
+      const sps = new Set([...supplierList, ...Object.keys(prices[name] || {})]);
+      for (const sp of sps) {
         const v = prices[name]?.[sp];
         if (typeof v !== "number") continue;
         allVals.push(v);
@@ -641,7 +647,7 @@ export default function PriceDesk() {
 
   // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
   const visibleCatalog = useMemo(
-    () => catalog.filter((c) => c.dept === selectedDept && (!hideEmpty || aggBySku[c.name]?.min != null)),
+    () => catalog.filter((c) => c.dept === selectedDept && (!hideEmpty || aggBySku[c.name]?.minAny != null)),
     [catalog, aggBySku, hideEmpty, selectedDept]
   );
 
