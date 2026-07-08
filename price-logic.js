@@ -62,9 +62,10 @@ export function median(nums) {
 // Outlier-aware client pricing. base = median when the cheapest is a >threshold
 // dump (excess stock), else the cheapest. client = round(base * (1 + margin%)).
 export function rowAggregates(pricesForSku, marginPct, outlierThreshold = 0.15) {
-  const present = SUPPLIERS.map((s) => [s, pricesForSku?.[s]]).filter(
-    ([, v]) => typeof v === "number"
-  );
+  // considerar TODOS los proveedores presentes en el objeto (no solo los 5 originales
+  // hardcodeados) — si no, los proveedores nuevos (ej. de iPhone) quedaban fuera del
+  // Mínimo/Medio/Client y del coloreo.
+  const present = Object.entries(pricesForSku || {}).filter(([, v]) => typeof v === "number");
   if (!present.length)
     return { count: 0, min: null, med: null, outliers: new Set(), bestIsOutlier: false, base: null, client: null };
   const vals = present.map(([, v]) => v);
