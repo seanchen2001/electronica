@@ -1985,12 +1985,21 @@ export default function PriceDesk() {
         const model = String(as.model || "").trim();
         const imeis = (Array.isArray(as.imeis) ? as.imeis : []).map((x) => String(x).trim()).filter(Boolean);
         if (!imeis.length) continue;
-        let idx = items.findIndex((it, i) => !usados.has(i) && String(it.sku).toLowerCase() === model.toLowerCase());
-        if (idx < 0) idx = items.findIndex((it, i) => !usados.has(i) && (inc(it.sku, model) || inc(model, it.sku)));
-        if (idx < 0) { result.push({ modelo: model, error: "no matcheó ninguna línea", imeis: imeis.length }); continue; }
-        usados.add(idx); newImeis[idx] = imeis;
-        const qty = Number(items[idx].qty) || 0;
-        result.push({ modelo: items[idx].sku, cargados: imeis.length, esperados: qty, completo: qty ? imeis.length >= qty : imeis.length > 0 });
+        // TODAS las líneas que matchean el modelo (mismo teléfono, distintos colores), en orden
+        const all = items.map((it, i) => i).filter((i) => !usados.has(i));
+        let idxs = all.filter((i) => String(items[i].sku).toLowerCase() === model.toLowerCase());
+        if (!idxs.length) idxs = all.filter((i) => inc(items[i].sku, model) || inc(model, items[i].sku));
+        if (!idxs.length) { result.push({ modelo: model, error: "no matcheó ninguna línea", imeis: imeis.length }); continue; }
+        // DISTRIBUIR en orden por cantidad: llena cada línea hasta su qty y sigue con la próxima
+        let cursor = 0;
+        for (const i of idxs) {
+          if (cursor >= imeis.length) break;
+          const qty = Number(items[i].qty) || 0;
+          const take = qty > 0 ? imeis.slice(cursor, cursor + qty) : imeis.slice(cursor);
+          newImeis[i] = take; usados.add(i); cursor += take.length;
+          result.push({ modelo: items[i].sku, color: items[i].color || "", cargados: take.length, esperados: qty, completo: qty ? take.length >= qty : take.length > 0 });
+        }
+        if (cursor < imeis.length) result.push({ modelo: model, sobraron: imeis.length - cursor, nota: "más IMEIs que unidades del modelo" });
       }
       const apply = (arr) => (arr || []).map((it, i) => ({ ...it, imeis: newImeis[i] }));
       setInvoiceHistory((h) => h.map((r) => (r.ts !== rec.ts ? r : { ...r, items: apply(r.items), order: r.order ? { ...r.order, items: apply(r.order.items) } : r.order })));
