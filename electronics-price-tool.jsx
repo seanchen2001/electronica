@@ -99,10 +99,22 @@ export default function PriceDesk() {
     // modelos agregados que no pisan a uno base
     for (const c of extraCatalog) { if (!baseNames.has(c.name)) push(c); }
     const idx = (c) => { const i = CATEGORIES.indexOf(c.cat); return i < 0 ? CATEGORIES.length : i; };
-    // cada modelo tiene departamento (default Teléfonos) y categoría; ordenar por categoría y, dentro, por nombre
-    // (defensivo: hay registros viejos sin cat/nombre → String(... || "") para no romper el render)
+    // capacidad de almacenamiento en GB (para ordenar 256 < 512 < 1TB, no alfabético)
+    const capGB = (n) => {
+      const tb = n.match(/(\d+)\s*TB?\b/i); if (tb) return Number(tb[1]) * 1024;
+      const gb = n.match(/(\d+)\s*GB\b/i); if (gb) return Number(gb[1]);
+      const pm = n.match(/\d+\s*[+/]\s*(\d+)/); if (pm) return Number(pm[1]);
+      return 0;
+    };
+    // nombre del modelo SIN el RAM/almacenamiento (para agrupar por modelo antes de la capacidad)
+    const baseName = (n) => { const m = n.match(/\d+\s*[+/]\s*\d+|\d+\s*(?:GB|TB?)\b/i); return (m ? n.slice(0, m.index) : n).trim(); };
+    // ordenar: categoría → modelo → CAPACIDAD (256, 512, 1TB) → resto (color)
     return merged.map((c) => ({ ...c, cat: c.cat || "Otros", dept: c.dept || DEFAULT_DEPT }))
-      .sort((a, b) => (idx(a) - idx(b)) || String(a.cat || "").localeCompare(String(b.cat || "")) || String(a.name || "").localeCompare(String(b.name || ""), "en", { numeric: true }));
+      .sort((a, b) => (idx(a) - idx(b))
+        || String(a.cat || "").localeCompare(String(b.cat || ""))
+        || baseName(a.name || "").localeCompare(baseName(b.name || ""), "en", { numeric: true })
+        || (capGB(a.name || "") - capGB(b.name || ""))
+        || String(a.name || "").localeCompare(String(b.name || ""), "en", { numeric: true }));
   }, [extraCatalog, hiddenModels]);
   // departamentos disponibles: los fijos + los que existan en el catálogo (para que aparezca la pestaña)
   const deptList = useMemo(() => [...new Set([...DEPTS, ...catalog.map((c) => c.dept)])], [catalog]);
