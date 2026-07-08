@@ -2091,6 +2091,7 @@ export default function PriceDesk() {
     const contents = [...agentContents.current, { role: "user", parts }];
     const turnActions = []; // acciones del worker en este turno (para el supervisor)
     let finalText = ""; // respuesta final del turno (para el registro de conversaciones)
+    let awaitingConfirm = false; // cortó para pedir confirmación (el modal es la "respuesta")
     try {
       for (let step = 0; step < 8; step++) {
         const cand = await callGeminiTools({ system, contents, tools: AGENT_TOOLS, apiKey: apiKey.trim(), maxTokens: 2048, model: smartWorker ? SUPERVISOR_MODEL : GEMINI_MODEL });
@@ -2112,7 +2113,11 @@ export default function PriceDesk() {
           if (result && result.status === "needs_confirmation") paused = true;
         }
         contents.push({ role: "user", parts: responses });
-        if (paused) break;
+        if (paused) { awaitingConfirm = true; break; }
+      }
+      // si terminó sin respuesta final y no está esperando confirmación → avisar (no dejar mudo)
+      if (!finalText && !awaitingConfirm) {
+        setAgentLog((l) => [...l, { role: "system", text: "Me quedé sin terminar (demasiados pasos o consulta muy pesada). Decímelo más concreto o en partes, y probá apagar 🧠 si va lento." }]);
       }
       agentContents.current = contents;
       // registro de conversaciones (sustrato de auto-mejora): cada turno queda persistido
