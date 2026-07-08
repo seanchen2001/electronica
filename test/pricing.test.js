@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { toNum } from "../lib/ai.js";
 import { rowAggregates, median, classifyFreshness, RECENT_MS } from "../price-logic.js";
 import { costForQty, hasTiers, bestSuppliers } from "../lib/pricing.js";
+import { planBestPrice, planMinSuppliers } from "../price-logic.js";
 
 test("toNum entiende formato es-AR y US", () => {
   assert.equal(toNum("$1.105,00"), 1105); // punto miles, coma decimal
@@ -73,4 +74,34 @@ test("classifyFreshness: reciente vs actualizado vs expirado", () => {
   assert.equal(classifyFreshness(now - RECENT_MS - 3600e3, now), "updated"); // ~25h → este ciclo pero no <24h
   assert.equal(classifyFreshness(new Date("2026-01-01T12:00:00").getTime(), now), "expired"); // semana pasada
   assert.equal(classifyFreshness(null, now), "expired");                    // sin fecha → re-pedir
+});
+
+test("planBestPrice: mix & match — cada modelo a su proveedor más barato (incluye proveedores nuevos)", () => {
+  const needed = { "S26": 10, "iPhone 17 256": 5 };
+  const prices = { "S26": { planET: 611, mirgor: 620 }, "iPhone 17 256": { South: 1000 } };
+  const p = planBestPrice(needed, prices);
+  assert.deepEqual(p.suppliers.sort(), ["South", "planET"]); // South (nuevo) DEBE contar
+  assert.equal(p.total, 10 * 611 + 5 * 1000);
+  assert.deepEqual(p.uncoverable, []);
+});
+
+test("planBestPrice: modelo sin ningún precio queda como 'uncoverable'", () => {
+  const p = planBestPrice({ "X": 1 }, {});
+  assert.deepEqual(p.uncoverable, ["X"]);
+});
+
+test("planMinSuppliers: cubre todo con proveedores nuevos incluidos", () => {
+  const needed = { "iPhone 17 256": 1, "S26": 1 };
+  const prices = { "iPhone 17 256": { South: 1000 }, "S26": { planET: 600 } };
+  const p = planMinSuppliers(needed, prices);
+  assert.deepEqual(p.suppliers.sort(), ["South", "planET"]);
+  assert.deepEqual(p.uncoverable, []);
+});
+
+test("planMinSuppliers: prefiere MENOS proveedores (uno que cubra todo)", () => {
+  // VITEL cubre los dos; planET también → 1 solo proveedor, el más barato en total
+  const needed = { "S26": 1, "A17": 1 };
+  const prices = { "S26": { planET: 611, VITEL: 615 }, "A17": { planET: 110, VITEL: 108 } };
+  const p = planMinSuppliers(needed, prices);
+  assert.equal(p.suppliers.length, 1, "debe usar UN solo proveedor si alcanza");
 });

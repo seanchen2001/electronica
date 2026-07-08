@@ -107,7 +107,9 @@ export function classifyFreshness(ts, now = Date.now(), recentMs = RECENT_MS) {
 // `needed` is a map { sku: qty }. Prices come from the full matrix.
 
 function suppliersWithPrice(sku, prices) {
-  return SUPPLIERS.map((sp) => [sp, prices[sku]?.[sp]]).filter(([, v]) => typeof v === "number");
+  // TODOS los proveedores con precio para el modelo (no solo los 5 originales) — así el sourcing
+  // considera proveedores nuevos (ej. de iPhone).
+  return Object.entries(prices[sku] || {}).filter(([, v]) => typeof v === "number");
 }
 
 // Plan A: each model goes to its globally-cheapest known supplier. Minimal cost,
@@ -134,9 +136,14 @@ export function planMinSuppliers(needed, prices) {
   const uncoverable = skus.filter((sku) => suppliersWithPrice(sku, prices).length === 0);
   const coverable = skus.filter((sku) => !uncoverable.includes(sku));
 
+  // proveedores RELEVANTES: los que tienen precio para algún modelo pedido (no los 5 fijos).
+  const relevant = [...new Set(coverable.flatMap((sku) => suppliersWithPrice(sku, prices).map(([sp]) => sp)))];
+  // brute force acotado (2^N): si hay demasiados proveedores, caemos al plan por mejor precio.
+  if (relevant.length > 16) { const bp = planBestPrice(needed, prices); return { bySupplier: bp.bySupplier, total: bp.total, suppliers: bp.suppliers, uncoverable }; }
+
   let best = null;
-  for (let mask = 1; mask < 1 << SUPPLIERS.length; mask++) {
-    const subset = SUPPLIERS.filter((_, i) => mask & (1 << i));
+  for (let mask = 1; mask < 1 << relevant.length; mask++) {
+    const subset = relevant.filter((_, i) => mask & (1 << i));
     const covers = coverable.every((sku) => subset.some((sp) => typeof prices[sku]?.[sp] === "number"));
     if (!covers) continue;
     const bySupplier = {};
