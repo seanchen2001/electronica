@@ -48,7 +48,7 @@ export default function ChatBox({
   superOn, setSuperOn, knowledgeCount,
   smartWorker, setSmartWorker,
   runImprovementReview, chatLogCount = 0,
-  pendingOps = [], setOpsCheck,
+  pendingOps = [], setOpsCheck, agentPlan,
   chatText, setChatText, chatImage, setChatImage, onChatPaste, submitChat, busyChat,
 }) {
   const s = styles;
@@ -59,6 +59,22 @@ export default function ChatBox({
         <span>💬 ASISTENTE</span>
         <button onClick={() => setChatOpen(false)} title="Colapsar hacia la derecha" style={s.chatCollapse}>▶</button>
       </div>
+
+      {/* Plan de tareas del agente — checklist en vivo (avisa qué va a hacer y qué ya hizo) */}
+      {agentPlan && agentPlan.tasks && agentPlan.tasks.length > 0 && (
+        <div style={{ background: "#0f1720", border: "1px solid #244a6b", borderRadius: 8, padding: "8px 10px", marginBottom: 8, maxHeight: "26vh", overflowY: "auto" }}>
+          <div style={{ fontSize: 11.5, color: "#8ec5f0", fontWeight: 600, marginBottom: 5 }}>📋 {agentPlan.titulo || "Plan"}</div>
+          {agentPlan.tasks.map((t, i) => {
+            const current = !t.done && agentPlan.tasks.slice(0, i).every((x) => x.done);
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "2px 0", fontSize: 11.5, color: t.done ? "#7c8597" : current ? "#e8ecf3" : "#9aa4b2" }}>
+                <span style={{ width: 16, flexShrink: 0 }}>{t.done ? "✅" : current ? "▶️" : "◻️"}</span>
+                <span style={{ textDecoration: t.done ? "line-through" : "none" }}>{t.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Pendientes de reclamar — proactivo (post-venta): entrega afuera / local / pago */}
       {pendingOps.length > 0 && (

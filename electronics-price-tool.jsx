@@ -176,6 +176,7 @@ export default function PriceDesk() {
   const [activeId, setActiveId] = useState(() => uid()); // id del pedido activo
   // ---- agente ----
   const [agentLog, setAgentLog] = useState([]); // [{role, text}]
+  const [agentPlan, setAgentPlan] = useState(null); // { titulo, tasks:[{text, done}] } — plan de pasos del agente
   const [agentBusy, setAgentBusy] = useState(false);
   const [showSteps, setShowSteps] = useState(false); // ver el proceso (herramientas) del agente
   const [pendingAgentCommit, setPendingAgentCommit] = useState(null); // {kind, summary, issues}
@@ -2025,6 +2026,17 @@ export default function PriceDesk() {
       setAgentLog((l) => [...l, { role: "artifact", artifact: art }]);
       return { ok: true, rendered: "chart", nota: "Ya se dibujó el gráfico en el chat. NO lo describas en texto largo." };
     }
+    if (name === "set_plan") {
+      const tasks = (Array.isArray(args.tasks) ? args.tasks : []).map((t) => String(t).trim()).filter(Boolean);
+      if (!tasks.length) { setAgentPlan(null); return { ok: true, mensaje: "Plan vacío / limpiado." }; }
+      setAgentPlan({ titulo: String(args.titulo || "Plan").trim(), tasks: tasks.map((t) => ({ text: t, done: false })) });
+      return { ok: true, pasos: tasks.length, mensaje: "Plan creado. Ejecutá los pasos EN ORDEN y marcá cada uno con mark_task al completarlo." };
+    }
+    if (name === "mark_task") {
+      const i = Number(args.index);
+      setAgentPlan((p) => (p && p.tasks[i] ? { ...p, tasks: p.tasks.map((t, j) => (j === i ? { ...t, done: args.done !== false } : t)) } : p));
+      return { ok: true, mensaje: `Paso ${i + 1} marcado. Seguí con el próximo pendiente.` };
+    }
     return { ok: false, error: "herramienta desconocida" };
   }
   // Confirmación universal de borrado del agente: pendingDelete = { titulo, detalle, run }.
@@ -2157,7 +2169,7 @@ export default function PriceDesk() {
     const p = pendingPriceLoad; setPendingPriceLoad(null);
     if (p) applyPriceLoad(p);
   }
-  function resetAgent() { agentContents.current = []; setAgentLog([]); setPendingAgentCommit(null); setPendingPriceLoad(null); }
+  function resetAgent() { agentContents.current = []; setAgentLog([]); setAgentPlan(null); setPendingAgentCommit(null); setPendingPriceLoad(null); }
 
   const s = styles;
 
@@ -2171,7 +2183,7 @@ export default function PriceDesk() {
       superOn={superOn} setSuperOn={setSuperOn} knowledgeCount={knowledgeBase.length}
       smartWorker={smartWorker} setSmartWorker={setSmartWorker}
       runImprovementReview={runImprovementReview} chatLogCount={chatLog.length}
-      pendingOps={pendingOps} setOpsCheck={setOpsCheck}
+      pendingOps={pendingOps} setOpsCheck={setOpsCheck} agentPlan={agentPlan}
       chatText={chatText} setChatText={setChatText} chatImage={chatImage} setChatImage={setChatImage}
       onChatPaste={onChatPaste} submitChat={submitChat} busyChat={busyChat} />
   );
