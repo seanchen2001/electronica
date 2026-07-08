@@ -1998,7 +1998,7 @@ export default function PriceDesk() {
       const assigns = Array.isArray(args.assignments) ? args.assignments : [];
       if (!assigns.length) return { ok: false, error: "Falta 'assignments' con {model, imeis} agrupados por modelo." };
       const inc = (a, b) => String(a || "").toLowerCase().includes(String(b || "").toLowerCase());
-      const newImeis = items.map((it) => [...lineImeis(it)]);
+      const planByIdx = {}; // idx de línea -> imeis[] que ESTA llamada asigna (no toca las demás líneas)
       const result = []; const usados = new Set();
       for (const as of assigns) {
         const model = String(as.model || "").trim();
@@ -2015,16 +2015,16 @@ export default function PriceDesk() {
           if (cursor >= imeis.length) break;
           const qty = Number(items[i].qty) || 0;
           const take = qty > 0 ? imeis.slice(cursor, cursor + qty) : imeis.slice(cursor);
-          newImeis[i] = take; usados.add(i); cursor += take.length;
+          planByIdx[i] = take; usados.add(i); cursor += take.length;
           result.push({ modelo: items[i].sku, color: items[i].color || "", cargados: take.length, esperados: qty, completo: qty ? take.length >= qty : take.length > 0 });
         }
         if (cursor < imeis.length) result.push({ modelo: model, sobraron: imeis.length - cursor, nota: "más IMEIs que unidades del modelo" });
       }
-      const apply = (arr) => (arr || []).map((it, i) => ({ ...it, imeis: newImeis[i] }));
+      // aplicar SOLO a las líneas asignadas por esta llamada — sobre el estado ACTUAL (funcional),
+      // así dos llamadas seguidas (ej. A17 y G06) no se pisan entre sí.
+      const apply = (arr) => (arr || []).map((it, i) => (i in planByIdx ? { ...it, imeis: planByIdx[i] } : it));
       setInvoiceHistory((h) => h.map((r) => (r.ts !== rec.ts ? r : { ...r, items: apply(r.items), order: r.order ? { ...r.order, items: apply(r.order.items) } : r.order })));
-      const total = items.reduce((a, it) => a + (Number(it.qty) || 0), 0);
-      const loaded = newImeis.reduce((a, arr) => a + arr.length, 0);
-      return { ok: true, factura: rec.no, lineas: result, total_cargados: loaded, total_esperados: total, completo: loaded >= total, nota: "IMEIs guardados. Si alguna línea dice 'no matcheó', avisá al usuario cuál." };
+      return { ok: true, factura: rec.no, lineas: result, nota: "IMEIs guardados (solo las líneas de estos modelos; las demás no se tocan)." };
     }
     if (name === "render_table") {
       const art = {
@@ -2072,7 +2072,7 @@ export default function PriceDesk() {
     try {
       const sys = buildSupervisorSystem({ depts: deptList, categories: CATEGORIES, suppliers: supplierList, learned: knowledgeBase });
       const payload = { pedido_usuario: userText || "", acciones_del_worker: mutating.map((a) => ({ tool: a.name, args: a.args })) };
-      const raw = await callGemini({ system: sys, content: JSON.stringify(payload), apiKey: apiKey.trim(), json: true, maxTokens: 1024, model: SUPERVISOR_MODEL });
+      const raw = await callGemini({ system: sys, content: JSON.stringify(payload), apiKey: apiKey.trim(), json: true, maxTokens: 8192, model: SUPERVISOR_MODEL });
       let out; try { out = JSON.parse(stripFences(raw)); } catch { return; }
       const learn = Array.isArray(out.learn) ? out.learn.map((r) => String(r).trim()).filter(Boolean) : [];
       const fixes = Array.isArray(out.fixes) ? out.fixes : [];
@@ -2152,8 +2152,10 @@ export default function PriceDesk() {
     if (!logs.length) { setAgentLog((l) => [...l, { role: "system", text: "Todavía no hay conversaciones guardadas para revisar." }]); return; }
     setAgentBusy(true);
     try {
-      const out = await callGemini({ system: buildImprovementSystem({ learned: knowledgeBase }), content: JSON.stringify(logs), apiKey: apiKey.trim(), json: true, maxTokens: 1024, model: SUPERVISOR_MODEL });
-      const p = JSON.parse(stripFences(out));
+      const out = await callGemini({ system: buildImprovementSystem({ learned: knowledgeBase }), content: JSON.stringify(logs), apiKey: apiKey.trim(), json: true, maxTokens: 8192, model: SUPERVISOR_MODEL });
+      const clean = stripFences(out || "").trim();
+      if (!clean) { setAgentLog((l) => [...l, { role: "system", text: "🧠 Revisé las conversaciones: sin cambios (la respuesta vino vacía)." }]); return; }
+      let p; try { p = JSON.parse(clean); } catch { setAgentLog((l) => [...l, { role: "system", text: "🧠 No pude leer la revisión (respuesta cortada). Probá de nuevo." }]); return; }
       const learn = (Array.isArray(p.learn) ? p.learn : []).map((r) => String(r).trim()).filter((r) => r && !knowledgeBase.some((k) => k.toLowerCase() === r.toLowerCase()));
       const drop = (Array.isArray(p.drop) ? p.drop : []).map((r) => String(r).toLowerCase());
       if (learn.length || drop.length) {
