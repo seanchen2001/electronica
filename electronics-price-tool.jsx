@@ -659,7 +659,9 @@ export default function PriceDesk() {
 
   // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
   const visibleCatalog = useMemo(
-    () => catalog.filter((c) => c.dept === selectedDept && (!hideEmpty || aggBySku[c.name]?.minAny != null)),
+    // "ocultar sin precio" esconde también los que tienen TODOS los precios expirados (rojo):
+    // agg.min es el mínimo entre precios FRESCOS (no expirados) → null si toda la fila está vieja.
+    () => catalog.filter((c) => c.dept === selectedDept && (!hideEmpty || aggBySku[c.name]?.min != null)),
     [catalog, aggBySku, hideEmpty, selectedDept]
   );
 
