@@ -329,6 +329,7 @@ export default function PriceDesk() {
   const [tiers, setTiers] = useState(() => load(TIERS_KEY, {})); // escalas por cantidad: tiers[sku][sup] = [{min,price}]
   const [priceHistory, setPriceHistory] = useState(() => load(PHIST_KEY, [])); // append-only: {sku,sup,price,ts} para analítica
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
+  const [listaPct, setListaPct] = useState(3); // % para el botón "Pegar en Lista" (independiente del MARGIN% de arriba)
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
   const [snapshots, setSnapshots] = useState(() => load(SNAP_KEY, []));
 
@@ -730,6 +731,22 @@ export default function PriceDesk() {
     if (lista[name] != null) return lista[name];
     const base = aggBySku[name]?.min ?? aggBySku[name]?.minAny;
     return base != null ? Math.round(base * (1 + marginNum / 100)) : null;
+  }
+
+  // Pega Mínimo + listaPct% como precio de Lista MANUAL en cada fila con precio conocido
+  // (congela el valor: deja de seguir en vivo al MARGIN%). Usa el mínimo fresco, con
+  // fallback al último mínimo conocido si toda la fila está expirada.
+  function fillLista() {
+    const pct = parseFloat(listaPct) || 0;
+    if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe cada fila con precio cargado)`)) return;
+    setLista((prev) => {
+      const next = { ...prev };
+      for (const { name } of catalog) {
+        const base = aggBySku[name]?.min ?? aggBySku[name]?.minAny;
+        if (base != null) next[name] = Math.round(base * (1 + pct / 100));
+      }
+      return next;
+    });
   }
 
   // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
@@ -2074,7 +2091,11 @@ export default function PriceDesk() {
       <div style={s.toolbar}>
         <button onClick={saveSnapshot} style={s.toolBtn}>Save snapshot</button>
         <button onClick={expireAll} style={s.toolBtn}>Expirar todo (lunes)</button>
-        <span style={s.listaFill}>Lista = Mín + MARGIN% (en vivo) · escribí en una celda para fijar un precio manual</span>
+        <span style={s.listaFill}>
+          Lista = Mín +
+          <input type="number" value={listaPct} onChange={(e) => setListaPct(e.target.value)} step="0.5" style={s.listaPctInput} />%
+          <button onClick={fillLista} style={s.toolBtn} title="Congela Mín + este % como Lista manual en todas las filas con precio">Pegar en Lista</button>
+        </span>
         <span style={s.toolNote}>
           {snapshots.length} snapshot{snapshots.length === 1 ? "" : "s"}
           {prevSnap && ` · last ${new Date(prevSnap.ts).toISOString().slice(0, 10)}`}
