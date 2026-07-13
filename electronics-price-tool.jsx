@@ -138,6 +138,7 @@ export default function PriceDesk() {
   }, [catalog, selectedDept, supplierList, prices, supplierDepts]);
   const [priceHistory, setPriceHistory] = useState(() => load(PHIST_KEY, [])); // append-only: {sku,sup,price,ts} para analítica
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
+  const [listaPct, setListaPct] = useState(3); // % del botón "Pegar en Lista" (independiente del MARGIN% de arriba)
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
   const [snapshots, setSnapshots] = useState(() => load(SNAP_KEY, []));
 
@@ -655,6 +656,22 @@ export default function PriceDesk() {
     if (lista[name] != null) return lista[name];
     const base = aggBySku[name]?.min ?? aggBySku[name]?.minAny;
     return base != null ? Math.round(base * (1 + marginNum / 100)) : null;
+  }
+
+  // Pega Mín + listaPct% como precio de Lista MANUAL en cada fila con precio conocido
+  // (congela el valor: deja de seguir en vivo al MARGIN%). Usa el mínimo fresco, con
+  // fallback al último mínimo conocido si la fila está toda expirada.
+  function fillLista() {
+    const pct = parseFloat(listaPct) || 0;
+    if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe cada fila con precio cargado)`)) return;
+    setLista((prev) => {
+      const next = { ...prev };
+      for (const { name } of catalog) {
+        const base = aggBySku[name]?.min ?? aggBySku[name]?.minAny;
+        if (base != null) next[name] = Math.round(base * (1 + pct / 100));
+      }
+      return next;
+    });
   }
 
   // catálogo a mostrar (oculta los sin precio fresco si el toggle está activo)
@@ -2270,6 +2287,7 @@ export default function PriceDesk() {
           selectedSkus={selectedSkus} selected={selected} toggleSelected={toggleSelected} setSelected={setSelected}
           aggBySku={aggBySku} freshBySku={freshBySku} lista={lista} listaFor={listaFor}
           setListaCell={setListaCell} setCell={setCell} marginNum={marginNum}
+          listaPct={listaPct} setListaPct={setListaPct} fillLista={fillLista}
           quoteGroups={quoteGroups} quoteSource={quoteSource} changeSource={changeSource}
           copyQuote={copyQuote} copied={copied} quoteOverrides={quoteOverrides}
           baseQuotePrice={baseQuotePrice} setOverride={setOverride} quoteText={quoteText} />

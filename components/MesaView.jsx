@@ -18,6 +18,7 @@ export default function MesaView({
   hideEmpty, setHideEmpty, catalog, visibleCatalog, deptList, selectedDept, setSelectedDept, deptSuppliers, selectAll, selectPriced, selectNone,
   selectedSkus, selected, toggleSelected, setSelected,
   aggBySku, freshBySku, lista, listaFor, setListaCell, setCell, marginNum,
+  listaPct, setListaPct, fillLista,
   // cotización al cliente
   quoteGroups, quoteSource, changeSource, copyQuote, copied, quoteOverrides, baseQuotePrice, setOverride, quoteText,
 }) {
@@ -94,7 +95,11 @@ export default function MesaView({
     <div style={s.toolbar}>
       <button onClick={saveSnapshot} style={s.toolBtn}>Save snapshot</button>
       <button onClick={expireAll} style={s.toolBtn}>Expirar todo (lunes)</button>
-      <span style={s.listaFill}>Lista = Mín + MARGIN% (en vivo) · escribí en una celda para fijar un precio manual</span>
+      <span style={s.listaFill}>
+        Lista = Mín +
+        <input type="number" value={listaPct} onChange={(e) => setListaPct(e.target.value)} step="0.5" style={s.listaPctInput} />%
+        <button onClick={fillLista} style={s.toolBtn} title="Congela Mín + este % como Lista manual en todas las filas con precio">Pegar en Lista</button>
+      </span>
       <span style={s.toolNote}>
         {snapshots.length} snapshot{snapshots.length === 1 ? "" : "s"}
         {prevSnap && ` · last ${new Date(prevSnap.ts).toISOString().slice(0, 10)}`}
