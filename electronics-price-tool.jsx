@@ -26,6 +26,51 @@ const GEMINI_MODEL = "gemini-2.5-flash";
 // Categorías válidas para nuevos modelos.
 const CATEGORIES = ["Samsung", "Motorola LATIN", "Motorola EURO"];
 
+// Split a SKU into base model + storage variant:
+//   "S26 Plus 12/256GB 5G" -> { base:"S26 Plus", ram:"12", spec:"256", rest:"5G" }
+//   "A56 12+256 5G DS"      -> { base:"A56",      ram:"12", spec:"256", rest:"5G DS" }
+//   "S25 ULTRA 12+1T 5G DS" -> { base:"S25 ULTRA",ram:"12", spec:"1TB", rest:"5G DS" }
+function parseModel(sku) {
+  const m = sku.match(/(\d+)\s*[/+]\s*(\d+)\s*(TB|GB|T|G)?\b/i);
+  if (!m) return { base: sku.trim(), ram: null, spec: null, rest: "" };
+  const unit = (m[3] || "").toUpperCase();
+  return {
+    base: sku.slice(0, m.index).trim(),
+    ram: m[1],
+    spec: unit === "TB" || unit === "T" ? m[2] + "TB" : m[2],
+    rest: sku.slice(m.index + m[0].length).trim(),
+  };
+}
+
+// Group a [{name,cat}] list by category, then by base model (catalog order preserved).
+// Returns [{ cat, groups:[{ key, base, variants:[{ name, spec, ram, label }] }] }].
+// The variant `label` is the storage size ("256"/"512"/"1TB"); it falls back to RAM
+// ("8/256" vs "12/256") or an edition tag ("256 · FIFA2026") only when needed to stay unique.
+function groupCatalog(list) {
+  const cats = [];
+  const cmap = new Map();
+  const gmap = new Map();
+  for (const { name, cat } of list) {
+    const { base, ram, spec, rest } = parseModel(name);
+    let c = cmap.get(cat);
+    if (!c) { c = { cat, groups: [] }; cmap.set(cat, c); cats.push(c); }
+    const key = cat + "|" + base;
+    let g = gmap.get(key);
+    if (!g) { g = { key, base, variants: [] }; gmap.set(key, g); c.groups.push(g); }
+    g.variants.push({ name, ram, spec, rest });
+  }
+  for (const c of cats) for (const g of c.groups) {
+    for (const v of g.variants) {
+      const extra = (v.rest || "").replace(/\b(5G|4G|LTE|DS)\b/gi, "").replace(/[-·]+/g, " ").trim();
+      v.label = v.spec == null ? v.name : extra ? `${v.spec} · ${extra}` : v.spec;
+    }
+    const seen = {};
+    for (const v of g.variants) seen[v.label] = (seen[v.label] || 0) + 1;
+    for (const v of g.variants) if (seen[v.label] > 1 && v.ram) v.label = `${v.ram}/${v.label}`;
+  }
+  return cats;
+}
+
 // Shared disambiguation rules: section headers (EURO/LATIN) + base-variant hint.
 const DISAMBIG =
   "If the text has section headers like EURO or LATIN, use them to disambiguate (EURO = the 'XT2xxx ...' models; LATIN = the 'Motorola ...' models). A bare base name like 'Edge 60' (no Neo/Fusion/Pro) means the base variant of that section.";
@@ -692,6 +737,18 @@ export default function PriceDesk() {
     () => (hideEmpty ? catalog.filter((c) => aggBySku[c.name]?.min != null) : catalog),
     [catalog, aggBySku, hideEmpty]
   );
+
+  // ---- agrupar la Mesa por modelo base (S26 Plus → 256/512/1TB, plegable) ----
+  const [openGroups, setOpenGroups] = useState({}); // gkey -> abierto; multi-variante arranca plegado
+  const grouped = useMemo(() => groupCatalog(visibleCatalog), [visibleCatalog]);
+  const isOpen = (g) => g.variants.length <= 1 || !!openGroups[g.key];
+  const toggleGroup = (k) => setOpenGroups((o) => ({ ...o, [k]: !o[k] }));
+  const multiKeys = useMemo(
+    () => grouped.flatMap((c) => c.groups.filter((g) => g.variants.length > 1).map((g) => g.key)),
+    [grouped]
+  );
+  const anyCollapsed = multiKeys.some((k) => !openGroups[k]);
+  const expandAll = (open) => setOpenGroups(open ? Object.fromEntries(multiKeys.map((k) => [k, true])) : {});
 
 
   // ---- cotizador (client quote) ----
@@ -1757,7 +1814,6 @@ export default function PriceDesk() {
   function resetAgent() { agentContents.current = []; setAgentLog([]); setPendingAgentCommit(null); setPendingPriceLoad(null); }
 
   const s = styles;
-  let lastCat = null;
 
   const askSection = (
     <section style={s.section}>
@@ -1861,6 +1917,118 @@ export default function PriceDesk() {
       </div>
     </aside>
   );
+
+  // ---- fila de un SKU en la tabla desktop (label = nombre completo o variante corta) ----
+  const skuRow = (name, label, indented = false) => {
+    const agg = aggBySku[name];
+    const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
+    const delta = spread ? agg.med - agg.min : 0;
+    const prevMinVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+    const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
+    const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
+    return (
+      <tr key={name} style={s.tr}>
+        <td style={{ ...s.td, ...s.tdSku }}>
+          <label style={{ ...s.skuLabel, ...(indented ? s.variantSku : {}) }}>
+            <input type="checkbox" checked={!!selected[name]} onChange={() => toggleSelected(name)} style={s.chk} />
+            <span>{label}</span>
+          </label>
+        </td>
+        {supplierList.map((sp) => {
+          const v = prices[name]?.[sp];
+          const has = typeof v === "number";
+          const state = freshBySku[name]?.[sp]; // recent | updated | expired | undefined
+          const isFresh = state && state !== "expired";
+          const isBest = isFresh && agg.count > 0 && v === agg.min;
+          const isOut = isFresh && agg.outliers.has(sp);
+          let bg = null, inColor = null;
+          if (isOut) { bg = s.cellOut; inColor = s.inOut; }
+          else if (isBest && state === "recent") {
+            bg = { background: "linear-gradient(135deg, #0e3536 0 47%, #0b0e14 47% 53%, #123a1d 53% 100%)" };
+            inColor = s.inBest;
+          }
+          else if (isBest) { bg = s.cellBest; inColor = s.inBest; }
+          else if (state === "recent") { bg = s.cellRecent; inColor = s.inRecent; }
+          else if (state === "updated") { bg = s.cellUpdated; inColor = s.inUpdated; }
+          else if (state === "expired") { bg = s.cellExpired; inColor = s.inExpired; }
+          const prev = prevSnap?.prices?.[name]?.[sp];
+          let trend = null;
+          if (has && typeof prev === "number" && prev !== v)
+            trend = { up: v > prev, pct: ((v - prev) / prev) * 100, prev, diff: v - prev };
+          const title = [
+            state === "expired" && "Expirado — re-pedir",
+            state === "recent" && "Recién actualizado (24h)",
+            state === "updated" && "Actualizado este ciclo",
+            isOut && `Outlier — bajo la mediana ${money(agg.med)} (exceso de stock)`,
+            isBest && "Mejor precio (fresco)",
+          ].filter(Boolean).join(" · ") || undefined;
+          return (
+            <td key={sp} style={{ ...s.td, ...s.tdCell, ...(bg || {}) }} title={title}>
+              <span style={s.cellInner}>
+                {isOut && "🔥"}
+                <input
+                  value={has ? v : ""}
+                  onChange={(e) => setCell(name, sp, e.target.value)}
+                  style={{ ...s.cellInput, ...(inColor || {}) }}
+                  inputMode="decimal"
+                />
+                {trend && (
+                  <span style={trend.up ? s.trendUp : s.trendDown}
+                    title={`Semana pasada: $${Math.round(trend.prev)} → ahora $${Math.round(v)} (${trend.up ? "+" : "−"}${Math.abs(trend.pct).toFixed(0)}%)`}>
+                    {trend.up ? "▲" : "▼"}{Math.abs(Math.round(trend.diff))}
+                  </span>
+                )}
+              </span>
+            </td>
+          );
+        })}
+        <td style={{ ...s.td, ...s.tdNum }}>
+          {money(agg.min)}
+          {minTrend && <span style={minTrend.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(minTrend.prev)} → ahora $${Math.round(agg.min)}`}> {minTrend.up ? "▲" : "▼"}{Math.abs(Math.round(minTrend.diff))}</span>}
+        </td>
+        <td style={{ ...s.td, ...s.tdNum, ...s.tdMuted }}>
+          {money(agg.med)}
+          {spread && <span style={s.deltaTag} title={`Δ ${money(delta)} entre mínimo y medio`}> Δ{Math.round(delta)}</span>}
+        </td>
+        <td style={{ ...s.td, ...s.tdCell, ...(spread ? s.listaSpread : {}) }}
+          title={spread ? `Spread: mín ${money(agg.min)} / medio ${money(agg.med)} — conviene revisar Lista` : undefined}>
+          <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)}
+            title={lista[name] == null ? `Auto: Mín + ${marginNum}% (escribí para fijar un precio manual; borrá para volver al automático)` : "Precio manual (borrá para volver al automático)"}
+            style={{ ...s.cellInput, ...(spread ? s.listaInputSpread : {}), ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
+        </td>
+        <td style={{ ...s.td, ...s.tdNum, ...s.tdMine }}
+          title={agg.bestIsOutlier ? `Outlier — priced from median ${money(agg.med)} × ${(1 + marginNum / 100).toFixed(3)}` : undefined}>
+          {agg.client != null ? <>{money(agg.client)}{agg.bestIsOutlier && <span style={s.medTag}> ·med</span>}</> : <span style={s.dash}>—</span>}
+        </td>
+      </tr>
+    );
+  };
+
+  // ---- fila de un SKU en la tabla mobile ----
+  const mSkuRow = (name, label, indented = false) => {
+    const agg = aggBySku[name];
+    const pmv = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
+    const pMin = pmv.length ? Math.min(...pmv) : null;
+    const mt = (agg.min != null && pMin != null && pMin !== agg.min) ? { up: agg.min > pMin, prev: pMin, diff: agg.min - pMin } : null;
+    return (
+      <tr key={name}>
+        <td style={{ ...s.mModel, ...(indented ? s.variantSku : {}) }}>{label}</td>
+        <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}{mt && <span style={mt.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(mt.prev)}`}> {mt.up ? "▲" : "▼"}{Math.abs(Math.round(mt.diff))}</span>}</td>
+        <td style={{ ...s.mTd, padding: 2 }}>
+          <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={{ ...s.mLista, ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
+        </td>
+        <td style={{ ...s.mTd, color: "#fbbf24", fontWeight: 600 }}>{agg.client != null ? "$" + Math.round(agg.client).toLocaleString() : "—"}</td>
+      </tr>
+    );
+  };
+
+  // rango de precio Client entre las variantes de un grupo (para el encabezado plegado)
+  const groupClientRange = (g) => {
+    const cs = g.variants.map((v) => aggBySku[v.name]?.client).filter((x) => x != null);
+    if (!cs.length) return "—";
+    const lo = Math.min(...cs), hi = Math.max(...cs);
+    return lo === hi ? money(lo) : money(lo) + "–" + money(hi);
+  };
 
   return (
     <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}), ...(!isMobile && chatOpen ? { paddingRight: 380 } : {}) }}>
@@ -1970,6 +2138,12 @@ export default function PriceDesk() {
             Ocultar sin precio
             {hideEmpty && <span style={s.hideCount}> ({catalog.length - visibleCatalog.length})</span>}
           </label>
+          {multiKeys.length > 0 && (
+            <button onClick={() => expandAll(anyCollapsed)} style={s.miniBtn}
+              title="Plegar/desplegar todos los modelos con varias capacidades">
+              {anyCollapsed ? "▾ Desplegar todo" : "▸ Plegar todo"}
+            </button>
+          )}
           <span style={s.markGroup}>
             <span style={s.hideCount}>Marcar:</span>
             <button onClick={selectAll} style={s.miniBtn}>Todo</button>
@@ -1989,28 +2163,28 @@ export default function PriceDesk() {
               </tr>
             </thead>
             <tbody>
-              {(() => { let lc = null; return visibleCatalog.map(({ name, cat }) => {
-                const agg = aggBySku[name];
-                const pmv = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
-                const pMin = pmv.length ? Math.min(...pmv) : null;
-                const mt = (agg.min != null && pMin != null && pMin !== agg.min) ? { up: agg.min > pMin, prev: pMin, diff: agg.min - pMin } : null;
-                const header = cat !== lc ? ((lc = cat), (
-                  <tr key={"mc-" + cat}><td colSpan={4} style={s.mCat}>{cat}</td></tr>
-                )) : null;
-                return (
-                  <React.Fragment key={name}>
-                    {header}
-                    <tr>
-                      <td style={s.mModel}>{name}</td>
-                      <td style={s.mTd}>{agg.min != null ? "$" + Math.round(agg.min).toLocaleString() : "—"}{mt && <span style={mt.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(mt.prev)}`}> {mt.up ? "▲" : "▼"}{Math.abs(Math.round(mt.diff))}</span>}</td>
-                      <td style={{ ...s.mTd, padding: 2 }}>
-                        <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)} style={{ ...s.mLista, ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
-                      </td>
-                      <td style={{ ...s.mTd, color: "#fbbf24", fontWeight: 600 }}>{agg.client != null ? "$" + Math.round(agg.client).toLocaleString() : "—"}</td>
-                    </tr>
-                  </React.Fragment>
-                );
-              }); })()}
+              {grouped.map((c) => (
+                <React.Fragment key={"mc-" + c.cat}>
+                  <tr><td colSpan={4} style={s.mCat}>{c.cat}</td></tr>
+                  {c.groups.map((g) => {
+                    if (g.variants.length === 1) return mSkuRow(g.variants[0].name, g.variants[0].name);
+                    const open = isOpen(g);
+                    return (
+                      <React.Fragment key={g.key}>
+                        <tr style={s.groupRow} onClick={() => toggleGroup(g.key)}>
+                          <td colSpan={3} style={{ ...s.mModel, ...s.groupHeadCell }}>
+                            <span style={s.groupChevron}>{open ? "▾" : "▸"}</span>
+                            <span style={s.groupName}>{g.base}</span>
+                            <span style={s.groupCount}>{g.variants.length}</span>
+                          </td>
+                          <td style={{ ...s.mTd, ...s.tdMine }}>{groupClientRange(g)}</td>
+                        </tr>
+                        {open && g.variants.map((v) => mSkuRow(v.name, v.label, true))}
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
             </tbody>
           </table>
         ) : (<>
@@ -2027,100 +2201,33 @@ export default function PriceDesk() {
               </tr>
             </thead>
             <tbody>
-              {visibleCatalog.map(({ name, cat }) => {
-                const agg = aggBySku[name];
-                const spread = agg.min != null && agg.med != null && agg.min !== agg.med;
-                const delta = spread ? agg.med - agg.min : 0;
-                const prevMinVals = prevSnap ? supplierList.map((sp) => prevSnap.prices?.[name]?.[sp]).filter((x) => typeof x === "number") : [];
-                const prevMin = prevMinVals.length ? Math.min(...prevMinVals) : null;
-                const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
-                const header =
-                  cat !== lastCat ? ((lastCat = cat), (
-                    <tr key={"cat-" + cat}>
-                      <td colSpan={supplierList.length + 5} style={s.catRow}>{cat}</td>
-                    </tr>
-                  )) : null;
-                return (
-                  <React.Fragment key={name}>
-                    {header}
-                    <tr style={s.tr}>
-                      <td style={{ ...s.td, ...s.tdSku }}>
-                        <label style={s.skuLabel}>
-                          <input type="checkbox" checked={!!selected[name]} onChange={() => toggleSelected(name)} style={s.chk} />
-                          <span>{name}</span>
-                        </label>
-                      </td>
-                      {supplierList.map((sp) => {
-                        const v = prices[name]?.[sp];
-                        const has = typeof v === "number";
-                        const state = freshBySku[name]?.[sp]; // recent | updated | expired | undefined
-                        const isFresh = state && state !== "expired";
-                        const isBest = isFresh && agg.count > 0 && v === agg.min;
-                        const isOut = isFresh && agg.outliers.has(sp);
-                        let bg = null, inColor = null;
-                        if (isOut) { bg = s.cellOut; inColor = s.inOut; }
-                        else if (isBest && state === "recent") {
-                          // recién actualizado Y mejor precio → media celda turquesa / media verde
-                          bg = { background: "linear-gradient(135deg, #0e3536 0 47%, #0b0e14 47% 53%, #123a1d 53% 100%)" };
-                          inColor = s.inBest;
-                        }
-                        else if (isBest) { bg = s.cellBest; inColor = s.inBest; } // mejor pero no recién → verde sólido
-                        else if (state === "recent") { bg = s.cellRecent; inColor = s.inRecent; }
-                        else if (state === "updated") { bg = s.cellUpdated; inColor = s.inUpdated; }
-                        else if (state === "expired") { bg = s.cellExpired; inColor = s.inExpired; }
-                        const prev = prevSnap?.prices?.[name]?.[sp];
-                        let trend = null;
-                        if (has && typeof prev === "number" && prev !== v)
-                          trend = { up: v > prev, pct: ((v - prev) / prev) * 100, prev, diff: v - prev };
-                        const title = [
-                          state === "expired" && "Expirado — re-pedir",
-                          state === "recent" && "Recién actualizado (24h)",
-                          state === "updated" && "Actualizado este ciclo",
-                          isOut && `Outlier — bajo la mediana ${money(agg.med)} (exceso de stock)`,
-                          isBest && "Mejor precio (fresco)",
-                        ].filter(Boolean).join(" · ") || undefined;
-                        return (
-                          <td key={sp} style={{ ...s.td, ...s.tdCell, ...(bg || {}) }} title={title}>
-                            <span style={s.cellInner}>
-                              {isOut && "🔥"}
-                              <input
-                                value={has ? v : ""}
-                                onChange={(e) => setCell(name, sp, e.target.value)}
-                                style={{ ...s.cellInput, ...(inColor || {}) }}
-                                inputMode="decimal"
-                              />
-                              {trend && (
-                                <span style={trend.up ? s.trendUp : s.trendDown}
-                                  title={`Semana pasada: $${Math.round(trend.prev)} → ahora $${Math.round(v)} (${trend.up ? "+" : "−"}${Math.abs(trend.pct).toFixed(0)}%)`}>
-                                  {trend.up ? "▲" : "▼"}{Math.abs(Math.round(trend.diff))}
-                                </span>
-                              )}
-                            </span>
+              {grouped.map((c) => (
+                <React.Fragment key={"cat-" + c.cat}>
+                  <tr>
+                    <td colSpan={supplierList.length + 5} style={s.catRow}>{c.cat}</td>
+                  </tr>
+                  {c.groups.map((g) => {
+                    if (g.variants.length === 1) return skuRow(g.variants[0].name, g.variants[0].name);
+                    const open = isOpen(g);
+                    return (
+                      <React.Fragment key={g.key}>
+                        <tr style={s.groupRow} onClick={() => toggleGroup(g.key)}>
+                          <td style={{ ...s.td, ...s.tdSku, ...s.groupHeadCell }}>
+                            <span style={s.groupChevron}>{open ? "▾" : "▸"}</span>
+                            <span style={s.groupName}>{g.base}</span>
+                            <span style={s.groupCount}>{g.variants.length}</span>
                           </td>
-                        );
-                      })}
-                      <td style={{ ...s.td, ...s.tdNum }}>
-                        {money(agg.min)}
-                        {minTrend && <span style={minTrend.up ? s.trendUp : s.trendDown} title={`Mín semana pasada: $${Math.round(minTrend.prev)} → ahora $${Math.round(agg.min)}`}> {minTrend.up ? "▲" : "▼"}{Math.abs(Math.round(minTrend.diff))}</span>}
-                      </td>
-                      <td style={{ ...s.td, ...s.tdNum, ...s.tdMuted }}>
-                        {money(agg.med)}
-                        {spread && <span style={s.deltaTag} title={`Δ ${money(delta)} entre mínimo y medio`}> Δ{Math.round(delta)}</span>}
-                      </td>
-                      <td style={{ ...s.td, ...s.tdCell, ...(spread ? s.listaSpread : {}) }}
-                        title={spread ? `Spread: mín ${money(agg.min)} / medio ${money(agg.med)} — conviene revisar Lista` : undefined}>
-                        <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)}
-                          title={lista[name] == null ? `Auto: Mín + ${marginNum}% (escribí para fijar un precio manual; borrá para volver al automático)` : "Precio manual (borrá para volver al automático)"}
-                          style={{ ...s.cellInput, ...(spread ? s.listaInputSpread : {}), ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
-                      </td>
-                      <td style={{ ...s.td, ...s.tdNum, ...s.tdMine }}
-                        title={agg.bestIsOutlier ? `Outlier — priced from median ${money(agg.med)} × ${(1 + marginNum / 100).toFixed(3)}` : undefined}>
-                        {agg.client != null ? <>{money(agg.client)}{agg.bestIsOutlier && <span style={s.medTag}> ·med</span>}</> : <span style={s.dash}>—</span>}
-                      </td>
-                    </tr>
-                  </React.Fragment>
-                );
-              })}
+                          <td colSpan={supplierList.length + 3} style={{ ...s.td, ...s.groupMid }}>
+                            {!open && <span style={s.groupHint}>{g.variants.map((v) => v.label).join(" · ")}</span>}
+                          </td>
+                          <td style={{ ...s.td, ...s.tdNum, ...s.tdMine }}>{groupClientRange(g)}</td>
+                        </tr>
+                        {open && g.variants.map((v) => skuRow(v.name, v.label, true))}
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
             </tbody>
           </table>
         </div>
@@ -2895,6 +3002,15 @@ const styles = {
   tdMuted: { color: "#7b8499" },
   tdMine: { color: "#fbbf24", fontWeight: 700, background: "#15130a", textAlign: "right" },
   catRow: { background: "#0e1218", color: "#8b94a7", fontSize: 10.5, fontWeight: 700, letterSpacing: 1, padding: "5px 8px", textTransform: "uppercase", position: "sticky", left: 0 },
+  // fila de encabezado de un modelo agrupado (S26 Plus ▸) + variantes indentadas
+  groupRow: { borderBottom: "1px solid #151a26", cursor: "pointer", background: "#0d1017" },
+  groupHeadCell: { cursor: "pointer" },
+  groupChevron: { display: "inline-block", width: 14, color: "#6fa8e6", fontSize: 10 },
+  groupName: { color: "#e8ecf3", fontWeight: 700 },
+  groupCount: { marginLeft: 6, fontSize: 9.5, color: "#6b7385", background: "#171c28", borderRadius: 8, padding: "1px 6px", fontWeight: 600 },
+  groupMid: { color: "#6b7385", fontSize: 11 },
+  groupHint: { color: "#7b8499", fontSize: 11 },
+  variantSku: { paddingLeft: 16, color: "#aeb6c6", fontWeight: 500 },
   cellInner: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2 },
   cellInput: { width: 58, background: "transparent", border: "1px solid transparent", color: "#cfd6e4", textAlign: "right", fontFamily: "inherit", fontSize: 12, padding: "3px 4px", borderRadius: 3, outline: "none", fontVariantNumeric: "tabular-nums" },
   // cell backgrounds by freshness / role
