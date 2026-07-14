@@ -31,7 +31,7 @@ import {
 } from "./lib/constants.js";
 import {
   uid, fmtDMY, today, parseDMY, nextInvoiceNo, blankClient, blankShip,
-  timesForPrices, load, clone, money,
+  timesForPrices, load, clone, money, skuKey, isRegional,
 } from "./lib/helpers.js";
 import {
   upsertWeekly,
@@ -300,10 +300,9 @@ export default function PriceDesk() {
   // los tokens (GB/DS/5G/color/capacidad), así nunca junta dos productos realmente distintos.
   useEffect(() => {
     if (!storeSynced) return;
-    const MIG_KEY = "desk-mig-dedupe-v2";
+    const MIG_KEY = "desk-mig-dedupe-v3";
     try { if (localStorage.getItem(MIG_KEY)) return; } catch {}
 
-    const alnum = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const priceCount = (nm) => { const p = prices[nm]; return p ? Object.values(p).filter((v) => typeof v === "number").length : 0; };
     const baseNameSet = new Set(CATALOG.map((c) => c.name));
 
@@ -312,26 +311,27 @@ export default function PriceDesk() {
       extraCatalog.filter((c) => /^\s*galaxy\b/i.test(String(c.name || "")) && priceCount(c.name) === 0).map((c) => c.name)
     );
 
-    // 2) agrupar (por departamento + clave alfanumérica) y fusionar los grupos con >1 nombre
+    // 2) agrupar (por departamento + clave del modelo) y fusionar los grupos con >1 nombre.
+    //    skuKey ignora may/min/espacios/signos y pliega "US SPECS" en el genérico.
     const all = [
       ...CATALOG.map((c) => ({ name: c.name, dept: DEFAULT_DEPT, base: true })),
       ...extraCatalog.map((c) => ({ name: c.name, dept: c.dept || DEFAULT_DEPT, base: baseNameSet.has(c.name) })),
     ].filter((c) => !junk.has(c.name));
     const groups = new Map();
     for (const c of all) {
-      const k = c.dept + " " + alnum(c.name);
+      const k = c.dept + " " + skuKey(c.name);
       if (!groups.has(k)) groups.set(k, new Map());
       if (!groups.get(k).has(c.name)) groups.get(k).set(c.name, c);
     }
     const merges = []; // [from, to]
     for (const g of groups.values()) {
       if (g.size < 2) continue;
-      // canónico: base primero; si no, el mejor CAPITALIZADO (más mayúsculas, p.ej. "iPhone"
-      // le gana a "iphone"); empate → el nombre más corto → alfabético
+      // canónico: base primero; luego el GENÉRICO (sin "US SPECS", regla del negocio); luego el
+      // mejor CAPITALIZADO ("iPhone" > "iphone"); empate → el nombre más corto → alfabético
       const upper = (s) => (String(s).match(/[A-Z]/g) || []).length;
       const members = [...g.values()].sort((a, b) =>
-        (Number(b.base) - Number(a.base)) || (upper(b.name) - upper(a.name)) ||
-        (a.name.length - b.name.length) || a.name.localeCompare(b.name));
+        (Number(b.base) - Number(a.base)) || (Number(isRegional(a.name)) - Number(isRegional(b.name))) ||
+        (upper(b.name) - upper(a.name)) || (a.name.length - b.name.length) || a.name.localeCompare(b.name));
       const to = members[0].name;
       for (const m of members.slice(1)) merges.push([m.name, to]);
     }
@@ -634,17 +634,19 @@ export default function PriceDesk() {
     if (!m || !m.name.trim()) return;
     const dept = m.dept || (supplierDepts[m.supplier] || [])[0] || DEFAULT_DEPT;
     const cat = m.cat ? m.cat : (dept === DEFAULT_DEPT ? "Samsung" : dept); // categoría libre fuera de Teléfonos
-    // ya existe (comparando sin distinguir mayúsculas/espacios) → no duplicar
-    const nk = m.name.trim().toLowerCase().replace(/\s+/g, " ");
-    const exists = (x) => x.name.trim().toLowerCase().replace(/\s+/g, " ") === nk;
-    setExtraCatalog((c) => (c.some(exists) || CATALOG.some(exists) ? c : [...c, { name: m.name.trim(), cat, dept }]));
+    // si ya existe (mismo skuKey: ignora may/min/espacios/signos y "US SPECS") usamos ESE nombre
+    // canónico y no duplicamos; el precio va al SKU existente. Si no, lo creamos.
+    const k = skuKey(m.name);
+    const existing = catalog.find((c) => skuKey(c.name) === k)?.name;
+    const target = existing || m.name.trim();
+    if (!existing) setExtraCatalog((c) => [...c, { name: target, cat, dept }]);
     if (m.price != null) {
       // asegurar que el proveedor exista y quede asociado al departamento (para que aparezca la columna y se agregue)
       if (m.supplier && !supplierList.some((s) => s.toLowerCase() === String(m.supplier).toLowerCase())) setSupplierList((l) => [...l, m.supplier]);
-      if (m.supplier && dept !== DEFAULT_DEPT) setSupplierDepts((sd) => { const cur = sd[m.supplier] || []; return cur.includes(dept) ? sd : { ...sd, [m.supplier]: [...cur, dept] }; });
-      setPrices((prev) => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [m.supplier]: m.price } }));
-      stampTimes([[m.name, m.supplier, false]]);
-      logPrices([{ sku: m.name, supplier: m.supplier, price: m.price }]);
+      if (m.supplier && dept !== DEFAULT_DEPT && !existing) setSupplierDepts((sd) => { const cur = sd[m.supplier] || []; return cur.includes(dept) ? sd : { ...sd, [m.supplier]: [...cur, dept] }; });
+      setPrices((prev) => ({ ...prev, [target]: { ...(prev[target] || {}), [m.supplier]: m.price } }));
+      stampTimes([[target, m.supplier, false]]);
+      logPrices([{ sku: target, supplier: m.supplier, price: m.price }]);
     }
     setPendingNew((p) => p.filter((_, i) => i !== idx));
   }
@@ -2279,13 +2281,12 @@ export default function PriceDesk() {
     stampTimes(p.rows.map((r) => [r.sku, p.supplier, false]));
     logPrices(p.rows.map((r) => ({ sku: r.sku, supplier: p.supplier, price: r.newPrice })));
     // Causa raíz de los duplicados: el parser propone como "nuevo" un modelo que YA existe con
-    // otro formato de nombre. Los que ya existen (comparando alfanuméricamente) NO se re-agregan:
-    // su precio va al SKU existente. Sólo los realmente nuevos quedan para confirmar en el modal.
-    const alnum = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const existingByKey = new Map(catalog.map((c) => [alnum(c.name), c.name]));
+    // otro formato de nombre (incl. variante "US SPECS"). Los que ya existen (mismo skuKey) NO
+    // se re-agregan: su precio va al SKU existente. Sólo los realmente nuevos van al modal.
+    const existingByKey = new Map(catalog.map((c) => [skuKey(c.name), c.name]));
     const trulyNew = [], routed = [];
     for (const m of (p.newModels || [])) {
-      const hit = existingByKey.get(alnum(m.name));
+      const hit = existingByKey.get(skuKey(m.name));
       if (hit) { if (m.price != null) routed.push({ sku: hit, price: m.price }); }
       else trulyNew.push(m);
     }
