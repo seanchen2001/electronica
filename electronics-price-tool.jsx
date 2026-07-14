@@ -257,6 +257,9 @@ export default function PriceDesk() {
   const dbReady = useRef(false);
   const dbOn = useRef(false);
   const storeLoaded = useRef(false);
+  // se pone en true cuando terminó de cargar la base (o se confirmó que no hay): dispara
+  // migraciones que necesitan ver los datos YA fusionados con Supabase, no sólo los locales.
+  const [storeSynced, setStoreSynced] = useState(false);
   const saveTimers = useRef({});
   // Migración (una vez, tras cargar la DB): el precio base de un modelo con escala pasa a ser
   // el del escalón MÁS BARATO. Así la Mesa/Mín/Medio/Client/Lista muestran el mejor precio, no el de comprar poco.
@@ -287,6 +290,72 @@ export default function PriceDesk() {
     if (clean.length !== extraCatalog.length) setExtraCatalog(clean);
     catDeduped.current = true;
   }, [extraCatalog]);
+
+  // Migración de un solo uso: limpiar la tanda de duplicados que metió el parser (load_prices
+  // agregó modelos que ya existían, con otro formato de nombre). Dos pasos, tras cargar la DB:
+  //   1) BASURA: entradas "Galaxy …" SIN precio (nombre largo del proveedor) → borrar directo.
+  //   2) DUPLICADOS: mismo modelo con distinto nombre (mayúsc./espacios/puntuación) → fusionar
+  //      en un solo SKU canónico, MOVIENDO precios/escala/lista/historial (sin perder datos).
+  // La clave de comparación es alfanumérica (ignora may/min, espacios y signos), pero conserva
+  // los tokens (GB/DS/5G/color/capacidad), así nunca junta dos productos realmente distintos.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const MIG_KEY = "desk-mig-dedupe-v2";
+    try { if (localStorage.getItem(MIG_KEY)) return; } catch {}
+
+    const alnum = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const priceCount = (nm) => { const p = prices[nm]; return p ? Object.values(p).filter((v) => typeof v === "number").length : 0; };
+    const baseNameSet = new Set(CATALOG.map((c) => c.name));
+
+    // 1) basura Galaxy sin precio
+    const junk = new Set(
+      extraCatalog.filter((c) => /^\s*galaxy\b/i.test(String(c.name || "")) && priceCount(c.name) === 0).map((c) => c.name)
+    );
+
+    // 2) agrupar (por departamento + clave alfanumérica) y fusionar los grupos con >1 nombre
+    const all = [
+      ...CATALOG.map((c) => ({ name: c.name, dept: DEFAULT_DEPT, base: true })),
+      ...extraCatalog.map((c) => ({ name: c.name, dept: c.dept || DEFAULT_DEPT, base: baseNameSet.has(c.name) })),
+    ].filter((c) => !junk.has(c.name));
+    const groups = new Map();
+    for (const c of all) {
+      const k = c.dept + " " + alnum(c.name);
+      if (!groups.has(k)) groups.set(k, new Map());
+      if (!groups.get(k).has(c.name)) groups.get(k).set(c.name, c);
+    }
+    const merges = []; // [from, to]
+    for (const g of groups.values()) {
+      if (g.size < 2) continue;
+      // canónico: base primero; si no, el mejor CAPITALIZADO (más mayúsculas, p.ej. "iPhone"
+      // le gana a "iphone"); empate → el nombre más corto → alfabético
+      const upper = (s) => (String(s).match(/[A-Z]/g) || []).length;
+      const members = [...g.values()].sort((a, b) =>
+        (Number(b.base) - Number(a.base)) || (upper(b.name) - upper(a.name)) ||
+        (a.name.length - b.name.length) || a.name.localeCompare(b.name));
+      const to = members[0].name;
+      for (const m of members.slice(1)) merges.push([m.name, to]);
+    }
+
+    if (!junk.size && !merges.length) { try { localStorage.setItem(MIG_KEY, "1"); } catch {} return; }
+
+    // mover precios/escala/timestamps/historial del duplicado al canónico (sin perder nada)
+    if (merges.length) {
+      const moveMerge = (obj) => { let n = obj, hit = false; for (const [from, to] of merges) { if (!(from in n)) continue; if (!hit) { n = { ...n }; hit = true; } n[to] = { ...(n[to] || {}), ...n[from] }; delete n[from]; } return n; };
+      const moveKeep = (obj) => { let n = obj, hit = false; for (const [from, to] of merges) { if (!(from in n)) continue; if (!hit) { n = { ...n }; hit = true; } n[to] = (n[to] ?? n[from]); delete n[from]; } return n; };
+      setPrices(moveMerge); setTiers(moveMerge); setTimes(moveMerge); setLista(moveKeep);
+      const remap = new Map(merges);
+      setPriceHistory((h) => h.map((r) => (remap.has(r.sku) ? { ...r, sku: remap.get(r.sku) } : r)));
+    }
+
+    // sacar del catálogo: la basura + los duplicados fusionados (los base no se borran: se ocultan)
+    const fromNames = merges.map(([from]) => from);
+    const removeExtra = new Set([...junk, ...fromNames.filter((n) => !baseNameSet.has(n))]);
+    const hideBase = fromNames.filter((n) => baseNameSet.has(n));
+    if (removeExtra.size) setExtraCatalog((l) => l.filter((c) => !removeExtra.has(c.name)));
+    if (hideBase.length) setHiddenModels((h) => [...new Set([...h, ...hideBase])]);
+
+    try { localStorage.setItem(MIG_KEY, "1"); } catch {}
+  }, [storeSynced, extraCatalog, prices]);
 
   async function pushStore(key, value) {
     try {
@@ -341,7 +410,7 @@ export default function PriceDesk() {
         setTrash((x) => resolve(d.trash, x, "trash"));
       }
     } catch { /* sin DB / dev -> seguimos con localStorage */ }
-    finally { dbReady.current = true; }
+    finally { dbReady.current = true; setStoreSynced(true); }
   }
 
   function syncUp(key, value) {
@@ -565,7 +634,10 @@ export default function PriceDesk() {
     if (!m || !m.name.trim()) return;
     const dept = m.dept || (supplierDepts[m.supplier] || [])[0] || DEFAULT_DEPT;
     const cat = m.cat ? m.cat : (dept === DEFAULT_DEPT ? "Samsung" : dept); // categoría libre fuera de Teléfonos
-    setExtraCatalog((c) => (c.some((x) => x.name === m.name) || CATALOG.some((x) => x.name === m.name) ? c : [...c, { name: m.name.trim(), cat, dept }]));
+    // ya existe (comparando sin distinguir mayúsculas/espacios) → no duplicar
+    const nk = m.name.trim().toLowerCase().replace(/\s+/g, " ");
+    const exists = (x) => x.name.trim().toLowerCase().replace(/\s+/g, " ") === nk;
+    setExtraCatalog((c) => (c.some(exists) || CATALOG.some(exists) ? c : [...c, { name: m.name.trim(), cat, dept }]));
     if (m.price != null) {
       // asegurar que el proveedor exista y quede asociado al departamento (para que aparezca la columna y se agregue)
       if (m.supplier && !supplierList.some((s) => s.toLowerCase() === String(m.supplier).toLowerCase())) setSupplierList((l) => [...l, m.supplier]);
@@ -2206,8 +2278,24 @@ export default function PriceDesk() {
     });
     stampTimes(p.rows.map((r) => [r.sku, p.supplier, false]));
     logPrices(p.rows.map((r) => ({ sku: r.sku, supplier: p.supplier, price: r.newPrice })));
-    if (p.newModels?.length) setPendingNew((pn) => [...pn, ...p.newModels.filter((m) => !pn.some((x) => x.name === m.name)).map((m) => ({ ...m, supplier: p.supplier }))]);
-    setAgentLog((l) => [...l, { role: "system", text: `✅ Cargué ${p.rows.length} precio(s) para ${p.supplier}${p.newModels?.length ? ` · ${p.newModels.length} modelo(s) nuevo(s) → confirmá en el modal` : ""}.` }]);
+    // Causa raíz de los duplicados: el parser propone como "nuevo" un modelo que YA existe con
+    // otro formato de nombre. Los que ya existen (comparando alfanuméricamente) NO se re-agregan:
+    // su precio va al SKU existente. Sólo los realmente nuevos quedan para confirmar en el modal.
+    const alnum = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const existingByKey = new Map(catalog.map((c) => [alnum(c.name), c.name]));
+    const trulyNew = [], routed = [];
+    for (const m of (p.newModels || [])) {
+      const hit = existingByKey.get(alnum(m.name));
+      if (hit) { if (m.price != null) routed.push({ sku: hit, price: m.price }); }
+      else trulyNew.push(m);
+    }
+    if (routed.length) {
+      setPrices((prev) => { const next = { ...prev }; for (const r of routed) next[r.sku] = { ...(next[r.sku] || {}), [p.supplier]: r.price }; return next; });
+      stampTimes(routed.map((r) => [r.sku, p.supplier, false]));
+      logPrices(routed.map((r) => ({ sku: r.sku, supplier: p.supplier, price: r.price })));
+    }
+    if (trulyNew.length) setPendingNew((pn) => [...pn, ...trulyNew.filter((m) => !pn.some((x) => x.name === m.name)).map((m) => ({ ...m, supplier: p.supplier }))]);
+    setAgentLog((l) => [...l, { role: "system", text: `✅ Cargué ${p.rows.length + routed.length} precio(s) para ${p.supplier}${trulyNew.length ? ` · ${trulyNew.length} modelo(s) nuevo(s) → confirmá en el modal` : ""}.` }]);
   }
   function confirmPriceLoad() {
     const p = pendingPriceLoad; setPendingPriceLoad(null);
