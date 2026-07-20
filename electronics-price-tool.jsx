@@ -291,44 +291,24 @@ export default function PriceDesk() {
     catDeduped.current = true;
   }, [extraCatalog]);
 
-  // Purga CONTINUA (no one-shot): las entradas "Galaxy …" SIN precio son basura del parser — el
-  // catálogo real siempre usa nombres cortos ("S26 12+256 5G DS"), nunca "Galaxy …". El parser
-  // sigue metiendo tandas nuevas (splits por cantidad "(1-20 pcs)", "LATIN SPECS", códigos "SM-…"),
-  // así que se limpian en CADA carga para que no se acumulen. Sólo borra las que no tienen precio
-  // (si alguna tuviera precio, se conserva). Idempotente: sólo escribe si hay algo que sacar → converge.
+  // Dedup CONTINUO (corre en cada carga, idempotente): el parser sigue inventando variantes del
+  // mismo modelo — "Galaxy …", "US/LATIN SPECS", splits por cantidad "(100 pcs)"/"(1-20 pcs)",
+  // códigos "(SM-S947)". skuKey las mapea al mismo modelo. Dos acciones, tras cargar la DB:
+  //   1) BASURA HUÉRFANA: "Galaxy …" SIN precio que no matchea ningún modelo conocido → borrar.
+  //   2) DUPLICADOS: mismo skuKey con distinto nombre → plegar en el SKU canónico, moviendo
+  //      precios/escala/lista/historial. Canónico GANA (una variante nunca pisa el precio del
+  //      base; sólo rellena proveedores que falten). No one-shot: así las tandas nuevas del
+  //      parser se limpian solas. Idempotente: si no hay basura ni duplicados, no escribe → converge.
   useEffect(() => {
     if (!storeSynced) return;
     const priceless = (nm) => { const p = prices[nm]; return !p || !Object.values(p).some((v) => typeof v === "number"); };
-    const isJunk = (c) => /^\s*galaxy\b/i.test(String(c.name || "")) && priceless(c.name);
-    if (extraCatalog.some(isJunk)) setExtraCatalog((l) => l.filter((c) => !isJunk(c)));
-  }, [storeSynced, extraCatalog, prices]);
-
-  // Migración de un solo uso: limpiar la tanda de duplicados que metió el parser (load_prices
-  // agregó modelos que ya existían, con otro formato de nombre). Dos pasos, tras cargar la DB:
-  //   1) BASURA: entradas "Galaxy …" SIN precio (nombre largo del proveedor) → borrar directo.
-  //   2) DUPLICADOS: mismo modelo con distinto nombre (mayúsc./espacios/puntuación) → fusionar
-  //      en un solo SKU canónico, MOVIENDO precios/escala/lista/historial (sin perder datos).
-  // La clave de comparación es alfanumérica (ignora may/min, espacios y signos), pero conserva
-  // los tokens (GB/DS/5G/color/capacidad), así nunca junta dos productos realmente distintos.
-  useEffect(() => {
-    if (!storeSynced) return;
-    const MIG_KEY = "desk-mig-dedupe-v3";
-    try { if (localStorage.getItem(MIG_KEY)) return; } catch {}
-
-    const priceCount = (nm) => { const p = prices[nm]; return p ? Object.values(p).filter((v) => typeof v === "number").length : 0; };
     const baseNameSet = new Set(CATALOG.map((c) => c.name));
 
-    // 1) basura Galaxy sin precio
-    const junk = new Set(
-      extraCatalog.filter((c) => /^\s*galaxy\b/i.test(String(c.name || "")) && priceCount(c.name) === 0).map((c) => c.name)
-    );
-
-    // 2) agrupar (por departamento + clave del modelo) y fusionar los grupos con >1 nombre.
-    //    skuKey ignora may/min/espacios/signos y pliega "US SPECS" en el genérico.
+    // agrupar (por departamento + skuKey) para detectar duplicados
     const all = [
       ...CATALOG.map((c) => ({ name: c.name, dept: DEFAULT_DEPT, base: true })),
       ...extraCatalog.map((c) => ({ name: c.name, dept: c.dept || DEFAULT_DEPT, base: baseNameSet.has(c.name) })),
-    ].filter((c) => !junk.has(c.name));
+    ];
     const groups = new Map();
     for (const c of all) {
       const k = c.dept + " " + skuKey(c.name);
@@ -338,8 +318,8 @@ export default function PriceDesk() {
     const merges = []; // [from, to]
     for (const g of groups.values()) {
       if (g.size < 2) continue;
-      // canónico: base primero; luego el GENÉRICO (sin "US SPECS", regla del negocio); luego el
-      // mejor CAPITALIZADO ("iPhone" > "iphone"); empate → el nombre más corto → alfabético
+      // canónico: base primero; luego el GENÉRICO (sin "US/LATIN SPECS"); luego el mejor
+      // CAPITALIZADO ("iPhone" > "iphone"); empate → el nombre más corto → alfabético
       const upper = (s) => (String(s).match(/[A-Z]/g) || []).length;
       const members = [...g.values()].sort((a, b) =>
         (Number(b.base) - Number(a.base)) || (Number(isRegional(a.name)) - Number(isRegional(b.name))) ||
@@ -347,12 +327,19 @@ export default function PriceDesk() {
       const to = members[0].name;
       for (const m of members.slice(1)) merges.push([m.name, to]);
     }
+    const merged = new Set(merges.map(([from]) => from));
 
-    if (!junk.size && !merges.length) { try { localStorage.setItem(MIG_KEY, "1"); } catch {} return; }
+    // basura Galaxy sin precio que NO se plegó en un duplicado (huérfana) → borrar
+    const junk = new Set(
+      extraCatalog.filter((c) => !merged.has(c.name) && /^\s*galaxy\b/i.test(String(c.name || "")) && priceless(c.name)).map((c) => c.name)
+    );
 
-    // mover precios/escala/timestamps/historial del duplicado al canónico (sin perder nada)
+    if (!junk.size && !merges.length) return; // nada que hacer → no escribe
+
+    // mover precios/escala/timestamps/historial del duplicado al canónico. Canónico GANA:
+    // n[to] existente pisa a n[from]; from sólo aporta los proveedores que al canónico le faltan.
     if (merges.length) {
-      const moveMerge = (obj) => { let n = obj, hit = false; for (const [from, to] of merges) { if (!(from in n)) continue; if (!hit) { n = { ...n }; hit = true; } n[to] = { ...(n[to] || {}), ...n[from] }; delete n[from]; } return n; };
+      const moveMerge = (obj) => { let n = obj, hit = false; for (const [from, to] of merges) { if (!(from in n)) continue; if (!hit) { n = { ...n }; hit = true; } n[to] = { ...n[from], ...(n[to] || {}) }; delete n[from]; } return n; };
       const moveKeep = (obj) => { let n = obj, hit = false; for (const [from, to] of merges) { if (!(from in n)) continue; if (!hit) { n = { ...n }; hit = true; } n[to] = (n[to] ?? n[from]); delete n[from]; } return n; };
       setPrices(moveMerge); setTiers(moveMerge); setTimes(moveMerge); setLista(moveKeep);
       const remap = new Map(merges);
@@ -365,8 +352,6 @@ export default function PriceDesk() {
     const hideBase = fromNames.filter((n) => baseNameSet.has(n));
     if (removeExtra.size) setExtraCatalog((l) => l.filter((c) => !removeExtra.has(c.name)));
     if (hideBase.length) setHiddenModels((h) => [...new Set([...h, ...hideBase])]);
-
-    try { localStorage.setItem(MIG_KEY, "1"); } catch {}
   }, [storeSynced, extraCatalog, prices]);
 
   async function pushStore(key, value) {
