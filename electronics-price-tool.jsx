@@ -291,6 +291,18 @@ export default function PriceDesk() {
     catDeduped.current = true;
   }, [extraCatalog]);
 
+  // Purga CONTINUA (no one-shot): las entradas "Galaxy …" SIN precio son basura del parser — el
+  // catálogo real siempre usa nombres cortos ("S26 12+256 5G DS"), nunca "Galaxy …". El parser
+  // sigue metiendo tandas nuevas (splits por cantidad "(1-20 pcs)", "LATIN SPECS", códigos "SM-…"),
+  // así que se limpian en CADA carga para que no se acumulen. Sólo borra las que no tienen precio
+  // (si alguna tuviera precio, se conserva). Idempotente: sólo escribe si hay algo que sacar → converge.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const priceless = (nm) => { const p = prices[nm]; return !p || !Object.values(p).some((v) => typeof v === "number"); };
+    const isJunk = (c) => /^\s*galaxy\b/i.test(String(c.name || "")) && priceless(c.name);
+    if (extraCatalog.some(isJunk)) setExtraCatalog((l) => l.filter((c) => !isJunk(c)));
+  }, [storeSynced, extraCatalog, prices]);
+
   // Migración de un solo uso: limpiar la tanda de duplicados que metió el parser (load_prices
   // agregó modelos que ya existían, con otro formato de nombre). Dos pasos, tras cargar la DB:
   //   1) BASURA: entradas "Galaxy …" SIN precio (nombre largo del proveedor) → borrar directo.
@@ -1096,18 +1108,52 @@ export default function PriceDesk() {
     setDocType(rec.type === "remito" ? "remito" : "factura");
     setEditingTs(rec.ts); // abre el editor como modal flotante sobre el Historial (no cambia de pestaña)
   }
-  // ---- IMEIs por unidad (se cargan post-factura, agrupados por modelo/línea) ----
+  // ---- IMEIs (+ Nº de serie) por unidad (se cargan post-factura, agrupados por modelo/línea) ----
   const lineImeis = (it) => (Array.isArray(it.imeis) ? it.imeis.filter((x) => String(x).trim()) : (it.imei ? [it.imei] : []));
+  const lineSerials = (it) => (Array.isArray(it.serials) ? it.serials.filter((x) => String(x).trim()) : []);
   function openImeiEditor(rec) {
     const items = rec.items || rec.order?.items || [];
-    setImeiEditor({ ts: rec.ts, no: rec.no, cliente: rec.client || "—", lines: items.map((it) => ({ sku: it.sku, color: it.color || "", qty: Number(it.qty) || 0, text: lineImeis(it).join("\n") })) });
+    setImeiEditor({ ts: rec.ts, no: rec.no, cliente: rec.client || "—", lines: items.map((it) => ({ sku: it.sku, cat: it.cat, spec: it.spec || "", color: it.color || "", qty: Number(it.qty) || 0, text: lineImeis(it).join("\n"), serialText: lineSerials(it).join("\n") })) });
   }
   function saveImeis() {
     const ed = imeiEditor; if (!ed) return;
-    const perLine = ed.lines.map((l) => l.text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
-    const apply = (items) => (items || []).map((it, i) => ({ ...it, imeis: perLine[i] || [] }));
+    const split = (t) => String(t || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const perImei = ed.lines.map((l) => split(l.text));
+    const perSerial = ed.lines.map((l) => split(l.serialText));
+    const apply = (items) => (items || []).map((it, i) => ({ ...it, imeis: perImei[i] || [], serials: perSerial[i] || [] }));
     setInvoiceHistory((h) => h.map((rec) => (rec.ts !== ed.ts ? rec : { ...rec, items: apply(rec.items), order: rec.order ? { ...rec.order, items: apply(rec.order.items) } : rec.order })));
     setImeiEditor(null);
+  }
+  // marca (mayúsculas) para la columna PRODUCTO del Excel; se deriva de la categoría/nombre.
+  const brandFor = (it) => {
+    const c = String(it.cat || "");
+    if (/^\s*samsung/i.test(c)) return "SAMSUNG";
+    if (/motorola/i.test(c) || /motorola/i.test(it.sku || "")) return "MOTOROLA";
+    if (/iphone|apple/i.test(c) || /iphone/i.test(it.sku || "")) return "APPLE";
+    return c.toUpperCase() || "—";
+  };
+  // una fila por unidad: [N°, PRODUCTO, MODELO, IMEI, NRO DE SERIE] (N° = contador global 1..N)
+  const imeiRows = (items) => {
+    const rows = []; let n = 0;
+    for (const it of items || []) {
+      const imeis = Array.isArray(it.imeis) ? it.imeis : (it.imei ? [it.imei] : []);
+      const serials = Array.isArray(it.serials) ? it.serials : [];
+      const units = Math.max(Number(it.qty) || 0, imeis.length, serials.length);
+      for (let u = 0; u < units; u++) rows.push([++n, brandFor(it), it.sku, String(imeis[u] || ""), String(serials[u] || "")]);
+    }
+    return rows;
+  };
+  // Excel .xlsx de una factura: IMEI + Nº de serie (una fila por unidad). SheetJS se carga on-demand.
+  async function exportImeiExcel(rec) {
+    const items = rec.items || rec.order?.items || [];
+    const rows = imeiRows(items);
+    if (!rows.length) { alert("Esta factura no tiene unidades para exportar."); return; }
+    const XLSX = await import("xlsx");
+    const ws = XLSX.utils.aoa_to_sheet([["N°", "PRODUCTO", "MODELO", "IMEI", "NRO DE SERIE"], ...rows]);
+    ws["!cols"] = [{ wch: 5 }, { wch: 12 }, { wch: 26 }, { wch: 20 }, { wch: 20 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "IMEI-Serie");
+    XLSX.writeFile(wb, `IMEI-Serie factura ${rec.no || rec.ts}.xlsx`);
   }
   // desde el panel TRADES: abrir el editor de IMEIs de una factura + contar IMEIs cargados
   function loadImeisForTrade(t) {
@@ -2426,6 +2472,7 @@ export default function PriceDesk() {
 
       {view === "historial" && (
         <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory} openImeiEditor={openImeiEditor}
+          exportImeiExcel={exportImeiExcel}
           loadInvoiceForEdit={loadInvoiceForEdit} downloadFromHistory={downloadFromHistory}
           deleteInvoice={deleteInvoice} pdfBusy={pdfBusy} />
       )}
@@ -2444,28 +2491,51 @@ export default function PriceDesk() {
       {/* Modal: cargar IMEIs por unidad (agrupados por modelo/línea), post-factura */}
       {imeiEditor && (
         <div style={s.modalOverlay} onClick={() => setImeiEditor(null)}>
-          <div style={{ ...s.modalCard, width: "min(560px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={s.newHead}>📱 IMEIs — factura #{imeiEditor.no} ({imeiEditor.cliente}) · uno por línea, uno por unidad</div>
+          <div style={{ ...s.modalCard, width: "min(720px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div style={s.newHead}>📱 IMEIs + Nº de serie — factura #{imeiEditor.no} ({imeiEditor.cliente}) · uno por unidad (pegá cada columna del Excel)</div>
             {imeiEditor.lines.map((l, i) => {
-              const count = l.text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).length;
-              const ok = l.qty ? count >= l.qty : count > 0;
+              const cnt = (t) => String(t || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean).length;
+              const ci = cnt(l.text), cs = cnt(l.serialText);
+              const ok = l.qty ? ci >= l.qty : ci > 0;
+              const rows = Math.min(Math.max(l.qty, 2) + 1, 8);
+              const onEdit = (k) => (e) => setImeiEditor((ed) => ({ ...ed, lines: ed.lines.map((x, j) => (j === i ? { ...x, [k]: e.target.value } : x)) }));
               return (
-                <div key={i} style={{ marginBottom: 10 }}>
+                <div key={i} style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 12, color: "#cfd6e4", marginBottom: 3 }}>
                     {l.sku}{l.color ? <span style={{ color: "#8b94a7" }}> · {l.color}</span> : null}
-                    <span style={{ marginLeft: 8, color: ok ? "#8ee0a8" : (count ? "#e0b34d" : "#8b94a7"), fontWeight: 600 }}>{count}/{l.qty}</span>
-                    {count > l.qty && <span style={{ marginLeft: 6, color: "#f0a0a0", fontSize: 11 }}>⚠ sobran {count - l.qty}</span>}
+                    <span style={{ marginLeft: 8, color: ok ? "#8ee0a8" : (ci ? "#e0b34d" : "#8b94a7"), fontWeight: 600 }}>IMEI {ci}/{l.qty}</span>
+                    {ci > l.qty && <span style={{ marginLeft: 6, color: "#f0a0a0", fontSize: 11 }}>⚠ sobran {ci - l.qty}</span>}
                   </div>
-                  <textarea value={l.text}
-                    onChange={(e) => setImeiEditor((ed) => ({ ...ed, lines: ed.lines.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)) }))}
-                    rows={Math.min(Math.max(l.qty, 2) + 1, 8)} placeholder={`Pegá ${l.qty} IMEIs, uno por línea…`}
-                    style={{ ...s.invArea, width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 11.5 }} />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 210 }}>
+                      <div style={{ fontSize: 10.5, color: "#8b94a7", marginBottom: 2 }}>IMEI</div>
+                      <textarea value={l.text} onChange={onEdit("text")}
+                        rows={rows} placeholder={`Pegá ${l.qty} IMEIs, uno por línea…`}
+                        style={{ ...s.invArea, width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 11.5 }} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 210 }}>
+                      <div style={{ fontSize: 10.5, color: "#8b94a7", marginBottom: 2 }}>Nº de serie
+                        <span style={{ marginLeft: 6, color: cs && cs !== ci ? "#f0a0a0" : "#6b7385", fontWeight: 600 }}>{cs}/{l.qty}</span>
+                        {cs > 0 && cs !== ci && <span style={{ marginLeft: 6, color: "#f0a0a0", fontSize: 11 }}>⚠ no coincide con IMEI</span>}
+                      </div>
+                      <textarea value={l.serialText} onChange={onEdit("serialText")}
+                        rows={rows} placeholder={`Pegá ${l.qty} seriales, uno por línea…`}
+                        style={{ ...s.invArea, width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: 11.5 }} />
+                    </div>
+                  </div>
                 </div>
               );
             })}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
               <button onClick={() => setImeiEditor(null)} style={{ ...s.toolBtn, ...s.toolBtnGhost, marginLeft: 0 }}>Cancelar</button>
-              <button onClick={saveImeis} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>💾 Guardar IMEIs</button>
+              <button
+                onClick={() => exportImeiExcel({ no: imeiEditor.no, ts: imeiEditor.ts, items: imeiEditor.lines.map((l) => ({
+                  sku: l.sku, cat: l.cat, color: l.color, qty: l.qty,
+                  imeis: l.text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
+                  serials: l.serialText.split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
+                })) })}
+                style={{ ...s.toolBtn, marginLeft: 0 }} title="Baja el Excel con lo que ves ahora (guardá primero si querés conservarlo)">⬇ Excel</button>
+              <button onClick={saveImeis} style={{ ...s.pdfBtn, border: "none", cursor: "pointer" }}>💾 Guardar</button>
             </div>
           </div>
         </div>
