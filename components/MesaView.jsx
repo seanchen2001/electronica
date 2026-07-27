@@ -18,7 +18,7 @@ export default function MesaView({
   hideEmpty, setHideEmpty, catalog, visibleCatalog, deptList, selectedDept, setSelectedDept, deptSuppliers, selectAll, selectPriced, selectNone,
   selectedSkus, selected, toggleSelected, setSelected,
   aggBySku, freshBySku, lista, listaFor, setListaCell, setCell, marginNum,
-  listaPct, setListaPct, fillLista,
+  listaPct, setListaPct, fillLista, listaMode, setListaMode,
   // cotización al cliente
   quoteGroups, quoteSource, changeSource, copyQuote, copied, quoteOverrides, baseQuotePrice, setOverride, quoteText,
 }) {
@@ -97,8 +97,21 @@ export default function MesaView({
       <button onClick={expireAll} style={s.toolBtn}>Expirar todo (lunes)</button>
       <span style={s.listaFill}>
         Lista = Mín +
-        <input type="number" value={listaPct} onChange={(e) => setListaPct(e.target.value)} step="0.5" style={s.listaPctInput} />%
-        <button onClick={fillLista} style={s.toolBtn} title="Congela Mín + este % como Lista manual en todas las filas con precio">Pegar en Lista</button>
+        <input type="number" value={listaPct} onChange={(e) => setListaPct(e.target.value)} step={listaMode === "fixed" ? "1" : "0.5"} style={s.listaPctInput} />
+        <button
+          onClick={() => setListaMode(listaMode === "pct" ? "fixed" : "pct")}
+          style={{ ...s.toolBtn, minWidth: 26, fontWeight: 700 }}
+          title="Cambiar entre % y $ fijo"
+        >
+          {listaMode === "fixed" ? "$" : "%"}
+        </button>
+        <button
+          onClick={fillLista}
+          style={s.toolBtn}
+          title={`Congela "Mín ${listaMode === "fixed" ? "+ $" + (listaPct || 0) : "+ " + (listaPct || 0) + "%"}" como Lista SOLO en el departamento "${selectedDept}"`}
+        >
+          Pegar en Lista → {selectedDept}
+        </button>
       </span>
       <span style={s.toolNote}>
         {snapshots.length} snapshot{snapshots.length === 1 ? "" : "s"}

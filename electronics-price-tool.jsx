@@ -138,7 +138,8 @@ export default function PriceDesk() {
   }, [catalog, selectedDept, supplierList, prices, supplierDepts]);
   const [priceHistory, setPriceHistory] = useState(() => load(PHIST_KEY, [])); // append-only: {sku,sup,price,ts} para analítica
   const [lista, setLista] = useState(() => load(LISTA_KEY, {}));
-  const [listaPct, setListaPct] = useState(3); // % del botón "Pegar en Lista" (independiente del MARGIN% de arriba)
+  const [listaPct, setListaPct] = useState(3); // valor del botón "Pegar en Lista" (independiente del MARGIN% de arriba)
+  const [listaMode, setListaMode] = useState("pct"); // "pct" = Mín + %, "fixed" = Mín + $ fijo
   const [times, setTimes] = useState(() => load(TIMES_KEY, {}));
   const [snapshots, setSnapshots] = useState(() => load(SNAP_KEY, []));
 
@@ -729,17 +730,22 @@ export default function PriceDesk() {
     return base != null ? Math.round(base * (1 + marginNum / 100)) : null;
   }
 
-  // Pega Mín + listaPct% como precio de Lista MANUAL en cada fila con precio conocido
-  // (congela el valor: deja de seguir en vivo al MARGIN%). Usa el mínimo fresco, con
-  // fallback al último mínimo conocido si la fila está toda expirada.
+  // Pega "Mín + %" o "Mín + $ fijo" como precio de Lista MANUAL en cada fila con precio
+  // conocido (congela el valor: deja de seguir en vivo al MARGIN%). Usa el mínimo fresco,
+  // con fallback al último mínimo conocido si la fila está toda expirada.
+  // SOLO al departamento en el que estás parado (selectedDept): si estás en Teléfonos aplica
+  // a Samsung/Motorola, si estás en iPhone solo a iPhone, etc.
   function fillLista() {
-    const pct = parseFloat(listaPct) || 0;
-    if (!confirm(`¿Pegar Mínimo + ${pct}% en la columna Lista? (sobrescribe cada fila con precio cargado)`)) return;
+    const val = parseFloat(listaPct) || 0;
+    const fixed = listaMode === "fixed";
+    const label = fixed ? `+ $${val}` : `+ ${val}%`;
+    const deptModels = catalog.filter((c) => c.dept === selectedDept);
+    if (!confirm(`¿Pegar Mínimo ${label} en la columna Lista de "${selectedDept}"? (sobrescribe cada fila con precio de ese depto)`)) return;
     setLista((prev) => {
       const next = { ...prev };
-      for (const { name } of catalog) {
+      for (const { name } of deptModels) {
         const base = aggBySku[name]?.min ?? aggBySku[name]?.minAny;
-        if (base != null) next[name] = Math.round(base * (1 + pct / 100));
+        if (base != null) next[name] = Math.round(fixed ? base + val : base * (1 + val / 100));
       }
       return next;
     });
@@ -2407,7 +2413,7 @@ export default function PriceDesk() {
           selectedSkus={selectedSkus} selected={selected} toggleSelected={toggleSelected} setSelected={setSelected}
           aggBySku={aggBySku} freshBySku={freshBySku} lista={lista} listaFor={listaFor}
           setListaCell={setListaCell} setCell={setCell} marginNum={marginNum}
-          listaPct={listaPct} setListaPct={setListaPct} fillLista={fillLista}
+          listaPct={listaPct} setListaPct={setListaPct} fillLista={fillLista} listaMode={listaMode} setListaMode={setListaMode}
           quoteGroups={quoteGroups} quoteSource={quoteSource} changeSource={changeSource}
           copyQuote={copyQuote} copied={copied} quoteOverrides={quoteOverrides}
           baseQuotePrice={baseQuotePrice} setOverride={setOverride} quoteText={quoteText} />
