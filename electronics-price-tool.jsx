@@ -33,6 +33,7 @@ import {
   uid, fmtDMY, today, parseDMY, nextInvoiceNo, blankClient, blankShip,
   timesForPrices, load, clone, money, skuKey, isRegional,
 } from "./lib/helpers.js";
+import { mergeIphoneColors } from "./lib/iphone-merge.js";
 import {
   upsertWeekly,
   costForQty as costForQtyPure,
@@ -354,6 +355,25 @@ export default function PriceDesk() {
     if (removeExtra.size) setExtraCatalog((l) => l.filter((c) => !removeExtra.has(c.name)));
     if (hideBase.length) setHiddenModels((h) => [...new Set([...h, ...hideBase])]);
   }, [storeSynced, extraCatalog, prices]);
+
+  // Migración de un solo uso (tras cargar la DB): juntar las variedades de iPhone. Los colores
+  // NO-naranja de un modelo se pliegan en un base sin color (mínimo por proveedor); el NARANJA
+  // queda aparte; la basura sin precio (CA/Damaged/US SPECS mal ubicados) se descarta. Corre en
+  // la app → sincroniza a la DB (así queda; editar la DB a mano no sirve porque la app la pisa).
+  const iphMerged = useRef(false);
+  useEffect(() => {
+    if (!storeSynced || iphMerged.current) return;
+    const r = mergeIphoneColors({ catalog: extraCatalog, prices, times, tiers, lista });
+    iphMerged.current = true;
+    if (!r.changed) return;
+    setExtraCatalog(r.catalog);
+    setPrices(r.prices);
+    setTimes(r.times);
+    setTiers(r.tiers);
+    setLista(r.lista);
+    // sacar del papelero de ocultos los nombres viejos ya inexistentes
+    if (r.deleted.length) setHiddenModels((h) => h.filter((n) => !r.deleted.includes(n)));
+  }, [storeSynced, extraCatalog, prices, times, tiers, lista]);
 
   async function pushStore(key, value) {
     try {
