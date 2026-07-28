@@ -1513,6 +1513,18 @@ export default function PriceDesk() {
   // resolución de SKUs (wrappers sobre lib/ai con el catálogo actual)
   function resolveSku(name) { return resolveSkuPure({ catalog, catalogNames }, name); }
   function resolveSkuSmart(name) { return resolveSkuSmartAI({ catalog, catalogNames, apiKey: apiKey.trim() }, name); }
+  // Resolvedor para ÓRDENES: nunca sustituye capacidad ni cotiza sin precio. Devuelve
+  // { ok:true, sku } o { ok:false, motivo } para que la línea se OMITA y se reporte al usuario.
+  const capTok = (s) => { const m = String(s ?? "").match(/(\d+)\s*\+\s*(\d+)/); return m ? m[1] + "+" + m[2] : null; };
+  const hasSupplierPrice = (sku) => { const p = prices[sku]; return !!p && Object.values(p).some((v) => typeof v === "number"); };
+  async function resolveOrderSku(name) {
+    const sku = await resolveSkuSmart(name);
+    if (!sku) return { ok: false, motivo: "no existe en el catálogo" };
+    const rc = capTok(name), sc = capTok(sku);
+    if (rc && sc && rc !== sc) return { ok: false, sku, motivo: `no existe en ${rc} (en catálogo está ${sc})` };
+    if (!hasSupplierPrice(sku)) return { ok: false, sku, motivo: "sin precio de proveedor cargado" };
+    return { ok: true, sku };
+  }
   async function runTool(name, args) {
     if (name === "best_supplier") { const sku = await resolveSkuSmart(args.sku); return sku ? bestSuppliers(sku, args.qty || 1) : { error: `No encontré "${args.sku}" en el catálogo.` }; }
     if (name === "negotiation_report") return negotiationReport(args.scope || "order");
@@ -1582,8 +1594,10 @@ export default function PriceDesk() {
     }
     if (name === "new_order") { resetOrder(); return { ok: true, mensaje: "Pedido nuevo y vacío. Los otros quedan en pendientes." }; }
     if (name === "add_order_line") {
-      const sku = await resolveSkuSmart(args.sku);
-      if (!sku) return { ok: false, error: `SKU desconocido: ${args.sku}` };
+      const r = await resolveOrderSku(args.sku);
+      // sin precio o capacidad inexistente → NO se agrega (nada de líneas en $0 ni cambiar capacidad)
+      if (!r.ok) return { ok: false, omitido: true, modelo: args.sku, motivo: r.motivo };
+      const sku = r.sku;
       const sup = args.supplier || cheapestSupplier(sku);
       const qty = Number(args.qty) || 1;
       agentSetOrder((o) => {
@@ -1606,9 +1620,11 @@ export default function PriceDesk() {
     if (name === "set_order_items") {
       const priceBySku = {}, costBySku = {}; // conservar precio y costo acordados por modelo
       orderRef.current.items.forEach((l) => { priceBySku[l.sku] = l.price; costBySku[l.sku] = l.cost; });
-      const lines = [];
+      const lines = [], omitidos = [];
       for (const it of args.items || []) {
-        const sku = await resolveSkuSmart(it.sku); if (!sku) continue;
+        const r = await resolveOrderSku(it.sku);
+        if (!r.ok) { omitidos.push({ modelo: it.sku, motivo: r.motivo }); continue; } // no se cotiza sin precio ni con otra capacidad
+        const sku = r.sku;
         const sup = it.supplier || cheapestSupplier(sku);
         const qty = Number(it.qty) || 1;
         lines.push({
@@ -1619,7 +1635,7 @@ export default function PriceDesk() {
         });
       }
       agentSetOrder((o) => ({ ...o, items: lines }));
-      return { ok: true, total_lineas: lines.length };
+      return { ok: true, agregados: lines.map((l) => l.sku), omitidos, total_lineas: lines.length };
     }
     if (name === "set_order_meta") {
       const notes = {};
