@@ -34,6 +34,7 @@ import {
   timesForPrices, load, clone, money, skuKey, isRegional,
 } from "./lib/helpers.js";
 import { mergeIphoneColors } from "./lib/iphone-merge.js";
+import { dedupePricelessShadows } from "./lib/dedupe-shadows.js";
 import {
   upsertWeekly,
   costForQty as costForQtyPure,
@@ -385,6 +386,21 @@ export default function PriceDesk() {
       setExtraCatalog((l) => l.map((c) => (isXiaomi(c.name) && c.cat !== "Xiaomi y Redmi" ? { ...c, cat: "Xiaomi y Redmi" } : c)));
     }
   }, [storeSynced, extraCatalog]);
+
+  // Borrar filas "sombra": duplicados SIN precio (ej. "G06 4+128" cat=Samsung) que son copia mal
+  // formateada de un modelo CON precio ("Motorola G06 4+128"). Salían en Samsung, en rojo/$0, y el
+  // agente matcheaba la copia vacía. Idempotente: solo borra cuando existe el twin con precio.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const r = dedupePricelessShadows({ catalog: extraCatalog, prices, times, tiers, lista, hiddenModels });
+    if (!r.changed) return;
+    setExtraCatalog(r.catalog);
+    setPrices(r.prices);
+    setTimes(r.times);
+    setTiers(r.tiers);
+    setLista(r.lista);
+    setHiddenModels(r.hiddenModels);
+  }, [storeSynced, extraCatalog, prices, times, tiers, lista, hiddenModels]);
 
   async function pushStore(key, value) {
     try {
