@@ -375,6 +375,17 @@ export default function PriceDesk() {
     if (r.deleted.length) setHiddenModels((h) => h.filter((n) => !r.deleted.includes(n)));
   }, [storeSynced, extraCatalog, prices, times, tiers, lista]);
 
+  // Categoría automática: todo modelo Redmi/Xiaomi/Poco va a la categoría "Xiaomi y Redmi"
+  // (corrige los que quedaron mal en "Samsung" y cualquiera nuevo). Idempotente: solo escribe
+  // si hay algo para corregir. Corre en la app → sincroniza.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const isXiaomi = (n) => /\b(redmi|xiaomi|poco)\b/i.test(String(n || ""));
+    if (extraCatalog.some((c) => isXiaomi(c.name) && c.cat !== "Xiaomi y Redmi")) {
+      setExtraCatalog((l) => l.map((c) => (isXiaomi(c.name) && c.cat !== "Xiaomi y Redmi" ? { ...c, cat: "Xiaomi y Redmi" } : c)));
+    }
+  }, [storeSynced, extraCatalog]);
+
   async function pushStore(key, value) {
     try {
       await fetch("/api/store", {
