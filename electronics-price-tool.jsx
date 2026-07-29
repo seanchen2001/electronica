@@ -35,6 +35,7 @@ import {
 } from "./lib/helpers.js";
 import { mergeIphoneColors } from "./lib/iphone-merge.js";
 import { dedupePricelessShadows } from "./lib/dedupe-shadows.js";
+import { fixDepartments } from "./lib/fix-departments.js";
 import {
   upsertWeekly,
   costForQty as costForQtyPure,
@@ -393,6 +394,20 @@ export default function PriceDesk() {
   useEffect(() => {
     if (!storeSynced) return;
     const r = dedupePricelessShadows({ catalog: extraCatalog, prices, times, tiers, lista, hiddenModels });
+    if (!r.changed) return;
+    setExtraCatalog(r.catalog);
+    setPrices(r.prices);
+    setTimes(r.times);
+    setTiers(r.tiers);
+    setLista(r.lista);
+    setHiddenModels(r.hiddenModels);
+  }, [storeSynced, extraCatalog, prices, times, tiers, lista, hiddenModels]);
+
+  // Corregir departamentos: Mac → Laptops; iPhone fuera de "iPhone" → mover (si tiene precio) o
+  // borrar (variante de color sin precio). Idempotente. Corre en la app → sincroniza.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const r = fixDepartments({ catalog: extraCatalog, prices, times, tiers, lista, hiddenModels });
     if (!r.changed) return;
     setExtraCatalog(r.catalog);
     setPrices(r.prices);
