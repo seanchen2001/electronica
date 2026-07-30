@@ -37,6 +37,7 @@ import { mergeIphoneColors } from "./lib/iphone-merge.js";
 import { dedupePricelessShadows } from "./lib/dedupe-shadows.js";
 import { fixDepartments } from "./lib/fix-departments.js";
 import { renameMotorolaEuro } from "./lib/rename-euro.js";
+import { dropColorJunk } from "./lib/drop-color-junk.js";
 import {
   upsertWeekly,
   costForQty as costForQtyPure,
@@ -432,6 +433,21 @@ export default function PriceDesk() {
     setLista(r.lista);
     setPriceHistory(r.priceHistory);
   }, [storeSynced, extraCatalog, prices, times, tiers, lista, priceHistory]);
+
+  // Borrar variantes de color SIN precio (proliferación del parser: "G06 4GB+64GB Tendril (Naranja)").
+  // El color no es un modelo aparte; una fila de color sin precio es basura. Los colores CON precio
+  // (ej. iPhone Orange que difiere) se conservan. Idempotente. Corre en la app → sincroniza.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const r = dropColorJunk({ catalog: extraCatalog, prices, times, tiers, lista, hiddenModels });
+    if (!r.changed) return;
+    setExtraCatalog(r.catalog);
+    setPrices(r.prices);
+    setTimes(r.times);
+    setTiers(r.tiers);
+    setLista(r.lista);
+    setHiddenModels(r.hiddenModels);
+  }, [storeSynced, extraCatalog, prices, times, tiers, lista, hiddenModels]);
 
   async function pushStore(key, value) {
     try {
