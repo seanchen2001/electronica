@@ -44,10 +44,10 @@ export const CATALOG = [
   { cat: "Motorola LATIN", name: "Motorola Edge 70 Fusion 8+256 5G" },
   { cat: "Motorola LATIN", name: "Motorola Edge 70 Fusion 8+256 5G - FIFA2026" },
   { cat: "Motorola LATIN", name: "Motorola G86 PWR 8+256" },
-  { cat: "Motorola EURO", name: "XT2535 G06 4+256" },
-  { cat: "Motorola EURO", name: "XT2527 G86 8+256 5G" },
-  { cat: "Motorola EURO", name: "XT2505 Edge 60 8+256" },
-  { cat: "Motorola EURO", name: "XT2509 Edge 60 Neo 12+256" },
+  { cat: "Motorola EURO", name: "Motorola G06 4+256 EURO" },
+  { cat: "Motorola EURO", name: "Motorola G86 8+256 5G EURO" },
+  { cat: "Motorola EURO", name: "Motorola Edge 60 8+256 EURO" },
+  { cat: "Motorola EURO", name: "Motorola Edge 60 Neo 12+256 EURO" },
 ];
 
 

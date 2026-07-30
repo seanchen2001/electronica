@@ -36,6 +36,7 @@ import {
 import { mergeIphoneColors } from "./lib/iphone-merge.js";
 import { dedupePricelessShadows } from "./lib/dedupe-shadows.js";
 import { fixDepartments } from "./lib/fix-departments.js";
+import { renameMotorolaEuro } from "./lib/rename-euro.js";
 import {
   upsertWeekly,
   costForQty as costForQtyPure,
@@ -416,6 +417,21 @@ export default function PriceDesk() {
     setLista(r.lista);
     setHiddenModels(r.hiddenModels);
   }, [storeSynced, extraCatalog, prices, times, tiers, lista, hiddenModels]);
+
+  // Renombrar Motorola EURO a "Motorola <modelo> EURO" (los 4 base ya se renombraron en el código;
+  // acá se mueven sus claves de precio en la DB, y se renombra el que vive en la DB). El sufijo
+  // " EURO" no colisiona con el LATIN en skuKey. Idempotente. Corre en la app → sincroniza.
+  useEffect(() => {
+    if (!storeSynced) return;
+    const r = renameMotorolaEuro({ catalog: extraCatalog, prices, times, tiers, lista, priceHistory });
+    if (!r.changed) return;
+    setExtraCatalog(r.catalog);
+    setPrices(r.prices);
+    setTimes(r.times);
+    setTiers(r.tiers);
+    setLista(r.lista);
+    setPriceHistory(r.priceHistory);
+  }, [storeSynced, extraCatalog, prices, times, tiers, lista, priceHistory]);
 
   async function pushStore(key, value) {
     try {
