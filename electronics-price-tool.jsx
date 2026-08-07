@@ -390,6 +390,18 @@ export default function PriceDesk() {
     }
   }, [storeSynced, extraCatalog]);
 
+  // Categoría automática: todo modelo Motorola va a "Motorola LATIN" (o "Motorola EURO" si el
+  // nombre dice EURO). Detecta también los nombres crudos de proveedor sin la marca: código
+  // XT#### o "G##" al inicio ("G06 4+64GB DS LATIN (XT2535-2)" salía con cat=Samsung).
+  useEffect(() => {
+    if (!storeSynced) return;
+    const isMoto = (n) => /\b(moto(rola)?|xt\d{4}(-\d+)?)\b|^g\d{2}\b/i.test(String(n || ""));
+    const motoCat = (n) => (/\beuro\b/i.test(String(n || "")) ? "Motorola EURO" : "Motorola LATIN");
+    if (extraCatalog.some((c) => isMoto(c.name) && c.cat !== motoCat(c.name))) {
+      setExtraCatalog((l) => l.map((c) => (isMoto(c.name) && c.cat !== motoCat(c.name) ? { ...c, cat: motoCat(c.name) } : c)));
+    }
+  }, [storeSynced, extraCatalog]);
+
   // Borrar filas "sombra": duplicados SIN precio (ej. "G06 4+128" cat=Samsung) que son copia mal
   // formateada de un modelo CON precio ("Motorola G06 4+128"). Salían en Samsung, en rojo/$0, y el
   // agente matcheaba la copia vacía. Idempotente: solo borra cuando existe el twin con precio.

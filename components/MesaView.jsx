@@ -1,6 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import styles from "../styles.js";
 import { money } from "../lib/helpers.js";
+
+const COLW_KEY = "desk_col_widths_v1";
+const loadColW = () => { try { return JSON.parse(localStorage.getItem(COLW_KEY)) || {}; } catch { return {}; } };
 
 // Pestaña Mesa de precios: ask-the-desk (móvil), paste & parse (móvil), tabla
 // comparativa de proveedores y cotización al cliente (WhatsApp).
@@ -25,6 +28,32 @@ export default function MesaView({
   const s = styles;
   let lastCat = null;
   const [arbOpen, setArbOpen] = useState(false);
+
+  // Columnas ajustables (solo escritorio): ancho por columna, arrastrando el borde derecho
+  // del encabezado. Doble click = volver al ancho automático. Persiste en localStorage.
+  const [colW, setColW] = useState(loadColW);
+  useEffect(() => { try { localStorage.setItem(COLW_KEY, JSON.stringify(colW)); } catch {} }, [colW]);
+  const startResize = (key) => (e) => {
+    e.preventDefault();
+    const th = e.currentTarget.closest("th");
+    const startW = th ? th.offsetWidth : colW[key] || 100;
+    const startX = e.clientX;
+    const move = (ev) => setColW((w) => ({ ...w, [key]: Math.max(46, startW + ev.clientX - startX) }));
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); document.body.style.cursor = ""; };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    document.body.style.cursor = "col-resize";
+  };
+  const grip = (key) => (
+    <span
+      onMouseDown={startResize(key)}
+      onDoubleClick={() => setColW((w) => { const { [key]: _, ...rest } = w; return rest; })}
+      title="Arrastrar para ajustar el ancho · doble click = auto"
+      style={{ position: "absolute", right: -4, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 3, touchAction: "none" }}
+    />
+  );
+  const colKeys = ["sku", ...deptSuppliers.map((sp) => "sp:" + sp), "min", "med", "lista", "client"];
+  const anyColW = colKeys.some((k) => colW[k] != null);
 
   // Banner de arbitrajes: proveedor muy por debajo de la mediana (solo aviso).
   const arbBanner = arbAlerts.length > 0 && (
@@ -232,15 +261,20 @@ export default function MesaView({
         </table>
       ) : (<>
       <div style={s.tableWrap}>
-        <table style={s.table}>
+        <table style={{ ...s.table, ...(anyColW ? { tableLayout: "fixed" } : {}) }}>
+          <colgroup>
+            {colKeys.map((k) => (
+              <col key={k} style={colW[k] != null ? { width: colW[k], minWidth: colW[k], maxWidth: colW[k] } : undefined} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ ...s.th, ...s.thSku }}>SKU</th>
-              {deptSuppliers.map((sp) => <th key={sp} style={s.th}>{sp}</th>)}
-              <th style={s.th}>Minimo</th>
-              <th style={s.th}>Medio</th>
-              <th style={s.th}>Lista</th>
-              <th style={{ ...s.th, ...s.thMine }}>Client {marginNum}%</th>
+              <th style={{ ...s.th, ...s.thSku }}>SKU{grip("sku")}</th>
+              {deptSuppliers.map((sp) => <th key={sp} style={s.th}>{sp}{grip("sp:" + sp)}</th>)}
+              <th style={s.th}>Minimo{grip("min")}</th>
+              <th style={s.th}>Medio{grip("med")}</th>
+              <th style={s.th}>Lista{grip("lista")}</th>
+              <th style={{ ...s.th, ...s.thMine }}>Client {marginNum}%{grip("client")}</th>
             </tr>
           </thead>
           <tbody>
@@ -256,10 +290,10 @@ export default function MesaView({
                 const minTrend = (agg.min != null && prevMin != null && prevMin !== agg.min) ? { up: agg.min > prevMin, prev: prevMin, diff: agg.min - prevMin } : null;
                 return (
                   <tr key={name} style={s.tr}>
-                    <td style={{ ...s.td, ...s.tdSku }}>
-                      <label style={{ ...s.skuLabel, ...(indent ? { paddingLeft: 18 } : {}) }}>
+                    <td style={{ ...s.td, ...s.tdSku, ...(anyColW ? { overflow: "hidden" } : {}) }}>
+                      <label style={{ ...s.skuLabel, ...(indent ? { paddingLeft: 18 } : {}), ...(anyColW ? { maxWidth: "100%" } : {}) }}>
                         <input type="checkbox" checked={!!selected[name]} onChange={() => toggleSelected(name)} style={s.chk} />
-                        <span>{label}</span>
+                        <span style={anyColW ? { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } : undefined} title={label}>{label}</span>
                       </label>
                     </td>
                     {deptSuppliers.map((sp) => {
@@ -299,13 +333,13 @@ export default function MesaView({
                         isBest && "Mejor precio (fresco)",
                       ].filter(Boolean).join(" · ") || undefined;
                       return (
-                        <td key={sp} style={{ ...s.td, ...s.tdCell, ...(bg || {}) }} title={title}>
+                        <td key={sp} style={{ ...s.td, ...s.tdCell, ...(bg || {}), ...(anyColW ? { overflow: "hidden" } : {}) }} title={title}>
                           <span style={s.cellInner}>
                             {isOut && "🔥"}
                             <input
                               value={has ? v : ""}
                               onChange={(e) => setCell(name, sp, e.target.value)}
-                              style={{ ...s.cellInput, ...(inColor || {}) }}
+                              style={{ ...s.cellInput, ...(inColor || {}), ...(anyColW ? { minWidth: 0 } : {}) }}
                               inputMode="decimal"
                             />
                             {tierMinQty != null && (
@@ -332,11 +366,11 @@ export default function MesaView({
                       {money(agg.med)}
                       {spread && <span style={s.deltaTag} title={`Δ ${money(delta)} entre mínimo y medio`}> Δ{Math.round(delta)}</span>}
                     </td>
-                    <td style={{ ...s.td, ...s.tdCell, ...(spread ? s.listaSpread : {}) }}
+                    <td style={{ ...s.td, ...s.tdCell, ...(spread ? s.listaSpread : {}), ...(anyColW ? { overflow: "hidden" } : {}) }}
                       title={spread ? `Spread: mín ${money(agg.min)} / medio ${money(agg.med)} — conviene revisar Lista` : undefined}>
                       <input value={listaFor(name) ?? ""} onChange={(e) => setListaCell(name, e.target.value)}
                         title={lista[name] == null ? `Auto: Mín + ${marginNum}% (escribí para fijar un precio manual; borrá para volver al automático)` : "Precio manual (borrá para volver al automático)"}
-                        style={{ ...s.cellInput, ...(spread ? s.listaInputSpread : {}), ...(lista[name] == null ? s.listaAuto : {}) }} inputMode="decimal" />
+                        style={{ ...s.cellInput, ...(spread ? s.listaInputSpread : {}), ...(lista[name] == null ? s.listaAuto : {}), ...(anyColW ? { minWidth: 0, maxWidth: "100%" } : {}) }} inputMode="decimal" />
                     </td>
                     <td style={{ ...s.td, ...s.tdNum, ...s.tdMine }}
                       title={agg.bestIsOutlier ? `Outlier — priced from median ${money(agg.med)} × ${(1 + marginNum / 100).toFixed(3)}` : undefined}>
