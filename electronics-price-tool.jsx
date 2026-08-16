@@ -17,10 +17,8 @@ import HistorialView from "./components/HistorialView.jsx";
 import ClientesView from "./components/ClientesView.jsx";
 import CuentasView from "./components/CuentasView.jsx";
 import PriceLoadModal from "./components/modals/PriceLoadModal.jsx";
-import AgentCommitModal from "./components/modals/AgentCommitModal.jsx";
 import DeleteModal from "./components/modals/DeleteModal.jsx";
 import NewModelsModal from "./components/modals/NewModelsModal.jsx";
-import ChatBox from "./components/ChatBox.jsx";
 import MesaView from "./components/MesaView.jsx";
 import OrdenesView from "./components/OrdenesView.jsx";
 import {
@@ -2465,23 +2463,8 @@ export default function PriceDesk() {
 
   const s = styles;
 
-
-  // chatbox unificado de escritorio (a la derecha, colapsable)
-  const busyChat = asking || parsing || agentBusy;
-  const chatBox = (
-    <ChatBox
-      chatOpen={chatOpen} setChatOpen={setChatOpen} chatScrollRef={chatScrollRef}
-      agentLog={agentLog} showSteps={showSteps} setShowSteps={setShowSteps} resetAgent={resetAgent} agentBusy={agentBusy}
-      superOn={superOn} setSuperOn={setSuperOn} knowledgeCount={knowledgeBase.length}
-      smartWorker={smartWorker} setSmartWorker={setSmartWorker}
-      runImprovementReview={runImprovementReview} chatLogCount={chatLog.length}
-      pendingOps={pendingOps} setOpsCheck={setOpsCheck} agentPlan={agentPlan}
-      chatText={chatText} setChatText={setChatText} chatImage={chatImage} setChatImage={setChatImage}
-      onChatPaste={onChatPaste} submitChat={submitChat} busyChat={busyChat} />
-  );
-
   return (
-    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}), ...(!isMobile && chatOpen ? { paddingRight: 380 } : {}) }}>
+    <div style={{ ...s.app, ...(isMobile ? s.appMobile : {}) }}>
       <style>{"@keyframes deskspin{to{transform:rotate(360deg)}}"}</style>
       <header style={s.header}>
         <div>
@@ -2590,15 +2573,8 @@ export default function PriceDesk() {
           deleteInvoice={deleteInvoice} pdfBusy={pdfBusy} />
       )}
 
-      {/* Chatbox / asistente — global, en todas las pestañas */}
-      {!isMobile && chatBox}
-      {!isMobile && !chatOpen && (
-        <button onClick={() => setChatOpen(true)} title="Abrir asistente" style={s.chatReopen}>💬 Asistente</button>
-      )}
-
-      {/* Modales del agente y de modelos nuevos */}
+      {/* Modales de carga de precios y de modelos nuevos */}
       <PriceLoadModal pending={pendingPriceLoad} onCancel={() => setPendingPriceLoad(null)} onConfirm={confirmPriceLoad} />
-      <AgentCommitModal pending={pendingAgentCommit} onCancel={() => setPendingAgentCommit(null)} onConfirm={confirmAgentCommit} />
       <DeleteModal pending={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />
 
       {/* Modal: cargar IMEIs por unidad (agrupados por modelo/línea), post-factura */}
