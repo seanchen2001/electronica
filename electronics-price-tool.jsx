@@ -25,7 +25,7 @@ import {
   PRICES_KEY, LISTA_KEY, MARGIN_KEY, SNAP_KEY, TIMES_KEY, CLIENTS_KEY, SHIPS_KEY,
   HIST_KEY, CAT_KEY, LEDGER_KEY, SUPP_KEY, ALIASES_KEY, TIERS_KEY, PHIST_KEY, DRAFTS_KEY,
   TRASH_KEY, TRASH_TTL_MS, PRICE_AUTO_THRESHOLD, ARB_GAP_PCT, CHAT_LOG_KEY, AUTO_IMPROVE,
-  DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, DEPTS, DEFAULT_DEPT, COMPANY, supplierCode, MONTHS_ES,
+  DRAFT_TTL_MS, ORDER_STAGES, stageInfo, CATEGORIES, DEPTS, DEFAULT_DEPT, deptForCat, COMPANY, supplierCode, MONTHS_ES,
 } from "./lib/constants.js";
 import {
   uid, fmtDMY, today, parseDMY, nextInvoiceNo, blankClient, blankShip,
@@ -112,7 +112,7 @@ export default function PriceDesk() {
     // nombre del modelo SIN el RAM/almacenamiento (para agrupar por modelo antes de la capacidad)
     const baseName = (n) => { const m = n.match(/\d+\s*[+/]\s*\d+|\d+\s*(?:GB|TB?)\b/i); return (m ? n.slice(0, m.index) : n).trim(); };
     // ordenar: categoría → modelo → CAPACIDAD (256, 512, 1TB) → resto (color)
-    return merged.map((c) => ({ ...c, cat: c.cat || "Otros", dept: c.dept || DEFAULT_DEPT }))
+    return merged.map((c) => ({ ...c, cat: c.cat || "Otros", dept: c.dept || deptForCat(c.cat) }))
       .sort((a, b) => (idx(a) - idx(b))
         || String(a.cat || "").localeCompare(String(b.cat || ""))
         || baseName(a.name || "").localeCompare(baseName(b.name || ""), "en", { numeric: true })
@@ -310,8 +310,8 @@ export default function PriceDesk() {
 
     // agrupar (por departamento + skuKey) para detectar duplicados
     const all = [
-      ...CATALOG.map((c) => ({ name: c.name, dept: DEFAULT_DEPT, base: true })),
-      ...extraCatalog.map((c) => ({ name: c.name, dept: c.dept || DEFAULT_DEPT, base: baseNameSet.has(c.name) })),
+      ...CATALOG.map((c) => ({ name: c.name, dept: deptForCat(c.cat), base: true })),
+      ...extraCatalog.map((c) => ({ name: c.name, dept: c.dept || deptForCat(c.cat), base: baseNameSet.has(c.name) })),
     ];
     const groups = new Map();
     for (const c of all) {
@@ -734,8 +734,8 @@ export default function PriceDesk() {
   function confirmNew(idx) {
     const m = pendingNew[idx];
     if (!m || !m.name.trim()) return;
-    const dept = m.dept || (supplierDepts[m.supplier] || [])[0] || DEFAULT_DEPT;
-    const cat = m.cat ? m.cat : (dept === DEFAULT_DEPT ? "Samsung" : dept); // categoría libre fuera de Teléfonos
+    const cat = m.cat || "Samsung baja gama";
+    const dept = m.dept || deptForCat(cat);
     // si ya existe (mismo skuKey: ignora may/min/espacios/signos y "US SPECS") usamos ESE nombre
     // canónico y no duplicamos; el precio va al SKU existente. Si no, lo creamos.
     const k = skuKey(m.name);

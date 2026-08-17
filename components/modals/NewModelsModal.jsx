@@ -1,6 +1,6 @@
 import React from "react";
 import styles from "../../styles.js";
-import { CATEGORIES, DEFAULT_DEPT } from "../../lib/constants.js";
+import { CATEGORIES, DEFAULT_DEPT, deptForCat } from "../../lib/constants.js";
 
 // Modal: modelos nuevos detectados en una cotización — revisar (departamento + categoría) y confirmar.
 export default function NewModelsModal({ pendingNew, editNew, confirmNew, dismissNew, onClose, deptList, supplierDepts = {} }) {
@@ -14,16 +14,16 @@ export default function NewModelsModal({ pendingNew, editNew, confirmNew, dismis
         {pendingNew.map((m, i) => {
           // default del departamento según el proveedor (ej. South → iPhone); editable
           const dept = m.dept || (supplierDepts[m.supplier] || [])[0] || DEFAULT_DEPT;
-          const isPhone = dept === DEFAULT_DEPT;
+          const catsDelDept = CATEGORIES.filter((c) => deptForCat(c) === dept); // "Otros" no tiene fijas → texto libre
           return (
             <div style={s.newRow} key={i}>
               <input value={m.name} onChange={(e) => editNew(i, "name", e.target.value)} style={{ ...s.invInput, flex: 1, minWidth: 150 }} />
               <select value={dept} onChange={(e) => editNew(i, "dept", e.target.value)} style={{ ...s.invInput, width: 100 }} title="Departamento (pestaña de la Mesa)">
                 {depts.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
-              {isPhone ? (
-                <select value={CATEGORIES.includes(m.cat) ? m.cat : "Samsung"} onChange={(e) => editNew(i, "cat", e.target.value)} style={{ ...s.invInput, width: 120 }}>
-                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {catsDelDept.length ? (
+                <select value={catsDelDept.includes(m.cat) ? m.cat : catsDelDept[0]} onChange={(e) => editNew(i, "cat", e.target.value)} style={{ ...s.invInput, width: 150 }}>
+                  {catsDelDept.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               ) : (
                 <input value={m.cat || dept} onChange={(e) => editNew(i, "cat", e.target.value)} placeholder="Categoría" style={{ ...s.invInput, width: 120 }} title="Categoría libre (ej. iPhone, MacBook)" />
