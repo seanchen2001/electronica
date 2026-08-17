@@ -2567,7 +2567,7 @@ export default function PriceDesk() {
       {view === "analitica" && <AnaliticaView data={analytics} inventory={inventory} lista={lista} />}
 
       {view === "historial" && (
-        <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory} openImeiEditor={openImeiEditor}
+        <HistorialView invoiceHistory={invoiceHistory} setInvoiceHistory={setInvoiceHistory}
           exportImeiExcel={exportImeiExcel}
           loadInvoiceForEdit={loadInvoiceForEdit} downloadFromHistory={downloadFromHistory}
           deleteInvoice={deleteInvoice} pdfBusy={pdfBusy} />
