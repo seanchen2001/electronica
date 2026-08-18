@@ -73,6 +73,17 @@ import TrashPanel from "./components/TrashPanel.jsx";
 export default function PriceDesk() {
   const [apiKey, setApiKey] = useState(() => { try { return sessionStorage.getItem("desk-secret") || ""; } catch { return ""; } });
   useEffect(() => { try { sessionStorage.setItem("desk-secret", apiKey); } catch {} }, [apiKey]);
+  // La contraseña se CONFIRMA con Enter (o al salir del campo), no tecla por tecla: si se
+  // mandaba en cada pulsación, el primer caracter daba 401 y la app se quedaba sin DB en silencio.
+  const [pwDraft, setPwDraft] = useState(apiKey);
+  const [authTick, setAuthTick] = useState(0);      // permite reintentar con la misma contraseña
+  const [dbStatus, setDbStatus] = useState("");     // "" | "ok" | "bad" | "err"
+  function commitPassword() {
+    const v = pwDraft.trim();
+    if (!v) return;
+    setDbStatus("");
+    if (v !== apiKey) setApiKey(v); else setAuthTick((n) => n + 1);
+  }
   const [margin, setMargin] = useState(() => load(MARGIN_KEY, 3));
   const [hideEmpty, setHideEmpty] = useState(false); // ocultar modelos sin precio esta semana
   const [selectedDept, setSelectedDept] = useState(DEFAULT_DEPT); // departamento activo en la Mesa (Teléfonos / iPhone / Laptops / …)
@@ -472,8 +483,9 @@ export default function PriceDesk() {
   async function loadStore({ skipObjects = false } = {}) {
     try {
       const r = await fetch("/api/store", { headers: { "x-app-password": apiKey || "" } });
-      if (!r.ok) return;
+      if (!r.ok) { setDbStatus(r.status === 401 ? "bad" : "err"); return; }
       const d = await r.json();
+      setDbStatus("ok");
       if (d && d.configured) {
         dbOn.current = true;
         // DB con datos -> manda la DB. DB vacía pero hay local -> migrar local a la DB.
@@ -527,7 +539,8 @@ export default function PriceDesk() {
     }, 800);
   }
 
-  useEffect(() => { if (apiKey && !storeLoaded.current) { storeLoaded.current = true; loadStore(); } }, [apiKey]);
+  // Se reintenta ante cada confirmación: un 401 ya no deja la sesión sin base para siempre.
+  useEffect(() => { if (apiKey) { storeLoaded.current = true; loadStore(); } }, [apiKey, authTick]);
   useEffect(() => { syncUp("clients", clients); }, [clients]);
   useEffect(() => { syncUp("shippings", shippings); }, [shippings]);
   useEffect(() => { syncUp("invoices", invoiceHistory); }, [invoiceHistory]);
@@ -2477,9 +2490,16 @@ export default function PriceDesk() {
             <span style={s.mondayDate}>{fmtDMY(mondayStart())}</span>
           </div>
           <label style={s.ctrlLabel}>
-            <span style={s.ctrlText}>{import.meta.env.DEV ? "GEMINI KEY" : "CONTRASEÑA"}</span>
-            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-              placeholder={import.meta.env.DEV ? "AI Studio key…" : "contraseña…"} style={{ ...s.input, width: 170 }} />
+            <span style={s.ctrlText}>
+              {import.meta.env.DEV ? "GEMINI KEY" : "CONTRASEÑA"}
+              {dbStatus === "ok" && <span style={{ color: "#4ade80" }} title="Conectado a la base"> ● conectado</span>}
+              {dbStatus === "bad" && <span style={{ color: "#f87171" }} title="La contraseña no es correcta"> ● incorrecta</span>}
+              {dbStatus === "err" && <span style={{ color: "#fbbf24" }} title="No se pudo llegar a la base"> ● sin conexión</span>}
+            </span>
+            <input type="password" value={pwDraft} onChange={(e) => setPwDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); commitPassword(); } }}
+              onBlur={commitPassword}
+              placeholder={import.meta.env.DEV ? "AI Studio key…" : "contraseña + Enter…"} style={{ ...s.input, width: 170 }} />
           </label>
           <label style={s.ctrlLabel}>
             <span style={s.ctrlText}>MARGIN %</span>
