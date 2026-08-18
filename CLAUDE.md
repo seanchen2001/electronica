@@ -62,6 +62,9 @@ que no cargue nada ahí.
   (importa en el borde del lunes, que es cuando expiran los precios).
 - **Renglones sin precio**: no tocar el SKU. Conserva su cotización anterior y envejece solo.
 - **Cantidades y stock**: todavía NO hay campo. Se descartan y se mencionan en la respuesta.
+- **Escribir `prices`, `times` y `priceHistory` en la MISMA pasada.** Si el historial se
+  escribe al final por separado y la carga se interrumpe, quedan precios sin movimiento
+  registrado (ya pasó con Bax el 18/08).
 - Al terminar, **reportar los cambios de precio**, no solo "cargué N modelos".
 
 ### Nombres
@@ -105,6 +108,16 @@ y verificar con `computeAccounts(..., "supplier")` que ningún saldo se movió.
 | Otros | Xiaomi y Redmi, Honor, Accesorios Amazon |
 
 Agregar una categoría o departamento hoy **requiere editar `lib/constants.js` y deployar**.
+
+## Qué vende cada proveedor
+
+- **mirgor** = Motorola **LATIN**, o sea **con cargador incluido**. Su lista trae también
+  accesorios y a veces una sección "BONDED" (mercadería en depósito fiscal).
+- **SH** cubre Motorola, Samsung, laptops (Dell/HP/Lenovo) y gaming (PS5/Switch).
+- **VITEL** y **planET**: Samsung y Motorola, más accesorios y tablets.
+- **Bax**: Samsung. **South**, **Boston** y **Janice Keyton**: Apple (y South además Samsung
+  y MacBooks). Janice Keyton aclara siempre que **el precio es negociable**.
+- Boston se llamaba *Iphone Miami* y Janice Keyton se llamaba *Primeway* (renombrados 18/08).
 
 ## Precios rojos
 
