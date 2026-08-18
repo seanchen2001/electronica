@@ -149,3 +149,11 @@ ninguna fila base sin precio que no esté en hiddenModels → saldría vacía
 En español rioplatense. Primero **qué cambió de precio y qué conviene**, después el detalle.
 Marcar siempre lo que se descartó o no se pudo interpretar en vez de inventarlo: si un número
 no cierra (un AirPods a $395 cuando valen $150), decirlo y no cargarlo.
+
+## Contraseña y conexión a la base (arreglado 18/08, commit 646f817)
+
+La contraseña se confirma con **Enter** o al salir del campo, nunca en cada tecla. Antes se
+mandaba con cada pulsación: el primer caracter daba 401, `storeLoaded` quedaba en `true` y la
+sesión entera se quedaba **sin base, en silencio** — la app seguía andando sobre localStorage
+sin persistir nada. Si alguien reporta "cargué algo y se perdió", revisar esto primero.
+El indicador al lado del campo dice `conectado` / `incorrecta` / `sin conexión`.
